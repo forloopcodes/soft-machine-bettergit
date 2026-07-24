@@ -11,6 +11,31 @@ Soft-Machine plugin**: the VM's plugin-service discovers it from
 it against the host SDK. Publishing to the community store happens from the
 Plugin Manager once the plugin is enabled.
 
+## Quick start (once the ABI v2 host is live)
+
+Prerequisite: [Soft-Machine PR #331](https://github.com/Soft-Machine-io/soft-machine/pull/331)
+(plugin host ABI v2 + forge proxy) merged and deployed. Until then, hosts
+refuse this plugin with a "needs a newer Soft-Machine" notice — test against
+a client and workspace image built from that branch instead.
+
+1. Open **[soft-machine.io](https://soft-machine.io)** and enter (or create)
+   a workspace.
+2. Paste this to the workspace agent:
+
+   > Clone https://github.com/forloopcodes/soft-machine-plugin-forge into
+   > /soft-machine/plugins/forge (the directory name must be exactly
+   > "forge"), then verify `curl -s localhost:6850/plugins` lists id
+   > "forge" with bundleError null.
+
+   This repo is private — the clone uses the workspace's `gh` credentials.
+3. Open the **Plugins** window, enable **PRs & Issues**, and connect a
+   GitHub or GitLab token under Settings → Integrations if needed. The
+   panels mount within a few seconds.
+4. To publish: with the plugin enabled and its bundle healthy, the VM
+   publisher pushes it to your account library automatically; the
+   **publish** button on the plugin's settings page then submits it to the
+   community store (a reviewed rolling PR — nothing auto-merges).
+
 ## Requirements
 
 - A Soft-Machine host with **plugin host ABI v2** (the `@soft-machine/sdk`
