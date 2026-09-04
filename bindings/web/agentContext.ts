@@ -84,7 +84,7 @@ function commentsSection(comments: ForgeComment[]): string[] {
  * verbatim so the agent has everything without a follow-up fetch.
  */
 export function chatMessageFor(label: string, context: string): string {
-  return `Shared from the PRs & Issues panel: ${label}\n\n${context}`;
+  return `Shared from the bettergit panel: ${label}\n\n${context}`;
 }
 
 /**

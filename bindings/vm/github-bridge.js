@@ -17,7 +17,7 @@
  * Security model
  * --------------
  * The host reaches this process at 127.0.0.1:<port> through TWO proxies:
- * the token-gated `/svc/forge/github-bridge/` route (what `usePluginService`
+ * the token-gated `/svc/bettergit/github-bridge/` route (what `usePluginService`
  * gives the browser) and the unauthenticated public port forward
  * (`https://<port>-<workspace>.soft-machine.io`). Because the second one
  * exists, every request here must prove it came through the first: callers
@@ -40,7 +40,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 
-const PLUGIN_ID = 'forge';
+const PLUGIN_ID = 'bettergit';
 const SERVICE_ID = 'github-bridge';
 /** Workspace server that mints and validates `sc_` service tokens. */
 const AUTHORITY = (process.env.FORGE_SVC_AUTHORITY || 'http://127.0.0.1:8080').replace(/\/$/, '');

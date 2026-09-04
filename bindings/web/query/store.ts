@@ -46,12 +46,26 @@ export interface QueryStoreOptions {
 
 const EMPTY_SNAPSHOT: QuerySnapshot<never> = { data: undefined, error: null, isFetching: false, updatedAt: 0 };
 
+/**
+ * User-level control over background polling. `scale` multiplies every
+ * plan's own cadence (1 = the route defaults); `enabled: false` stops the
+ * timers entirely — data then refreshes only on manual refresh, after a
+ * write, or when a never-fetched key is first subscribed.
+ */
+export interface PollPolicy {
+  enabled: boolean;
+  scale: number;
+}
+
+export const DEFAULT_POLL_POLICY: PollPolicy = { enabled: true, scale: 1 };
+
 export class QueryStore {
   private entries = new Map<string, Entry<unknown>>();
   private now: () => number;
   private isVisible: () => boolean;
   private gcMs: number;
   private maxBackoffMs: number;
+  private policy: PollPolicy = DEFAULT_POLL_POLICY;
 
   constructor(options: QueryStoreOptions = {}) {
     this.now = options.now ?? (() => Date.now());
@@ -64,6 +78,29 @@ export class QueryStore {
   getSnapshot<T>(key: string): QuerySnapshot<T> {
     const entry = this.entries.get(key) as Entry<T> | undefined;
     return entry ? entry.snapshot : (EMPTY_SNAPSHOT as QuerySnapshot<T>);
+  }
+
+  getPollPolicy(): PollPolicy {
+    return this.policy;
+  }
+
+  /** Apply a new policy to every watched entry: timers are re-armed at the
+   *  new cadence, or cleared when polling is switched off. */
+  setPollPolicy(next: PollPolicy): void {
+    const scale = Number.isFinite(next.scale) && next.scale > 0 ? next.scale : 1;
+    const enabled = next.enabled !== false;
+    if (enabled === this.policy.enabled && scale === this.policy.scale) return;
+    this.policy = { enabled, scale };
+    for (const entry of this.entries.values()) {
+      if (entry.listeners.size === 0) continue;
+      if (!enabled) this.clearTimer(entry);
+      else if (!entry.inflight) this.schedule(entry);
+    }
+  }
+
+  /** A plan's effective cadence under the current policy. */
+  private intervalFor(plan: QueryPlan<unknown>): number {
+    return this.policy.enabled ? plan.pollMs * this.policy.scale : Number.POSITIVE_INFINITY;
   }
 
   /**
@@ -94,7 +131,7 @@ export class QueryStore {
     }
     entry.listeners.add(listener);
 
-    const stale = this.now() - entry.snapshot.updatedAt >= entry.plan.pollMs;
+    const stale = this.now() - entry.snapshot.updatedAt >= this.intervalFor(entry.plan);
     if (!entry.inflight && (entry.snapshot.updatedAt === 0 || stale)) {
       void this.fetch(entry);
     } else if (!entry.timer && !entry.inflight) {
@@ -130,7 +167,7 @@ export class QueryStore {
   resumeIfStale(): void {
     for (const entry of this.entries.values()) {
       if (entry.listeners.size === 0 || entry.inflight) continue;
-      if (this.now() - entry.snapshot.updatedAt >= entry.plan.pollMs) void this.fetch(entry);
+      if (this.now() - entry.snapshot.updatedAt >= this.intervalFor(entry.plan)) void this.fetch(entry);
     }
   }
 
@@ -157,9 +194,10 @@ export class QueryStore {
 
   private schedule(entry: Entry<unknown>): void {
     this.clearTimer(entry);
-    if (entry.listeners.size === 0) return;
-    const backoff = entry.failures === 0 ? 1 : Math.min(2 ** entry.failures, this.maxBackoffMs / entry.plan.pollMs);
-    const delay = Math.min(entry.plan.pollMs * backoff, this.maxBackoffMs);
+    if (entry.listeners.size === 0 || !this.policy.enabled) return;
+    const base = this.intervalFor(entry.plan);
+    const backoff = entry.failures === 0 ? 1 : Math.min(2 ** entry.failures, this.maxBackoffMs / base);
+    const delay = Math.min(base * backoff, this.maxBackoffMs);
     entry.timer = setTimeout(() => {
       entry.timer = null;
       if (entry.listeners.size === 0) return;

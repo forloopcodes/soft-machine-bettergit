@@ -34,7 +34,7 @@ import {
   type ListFilters,
 } from "./types";
 
-export const PLUGIN_ID = "forge";
+export const PLUGIN_ID = "bettergit";
 export const BRIDGE_SERVICE_ID = "github-bridge";
 
 interface ForgeContextValue {

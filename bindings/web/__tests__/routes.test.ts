@@ -26,7 +26,7 @@ function fakeClient(
 ) {
   const calls: Call[] = [];
   const client: BridgeClient = {
-    key: "https://m.example/svc/forge/github-bridge/",
+    key: "https://m.example/svc/bettergit/github-bridge/",
     whoami: async () => whoami,
     localRepos: async () => localRepos,
     github: async <T,>(method: GithubMethod, path: string, options: GithubRequestOptions = {}) => {
@@ -83,12 +83,9 @@ describe("parsePath", () => {
 });
 
 describe("planRead: lists", () => {
-  it("asks the Search API for issues with the panel's filters and both counts", async () => {
+  it("asks the Search API for issues with the panel's filters, one request, own total only", async () => {
     const { client, calls } = fakeClient({
-      "GET /search/issues": (call) =>
-        String(call.query?.q).includes("state:closed")
-          ? { total_count: 12, items: [] }
-          : { total_count: 3, items: [searchHit(1), searchHit(2, { pull_request: { merged_at: null } })] },
+      "GET /search/issues": { total_count: 3, items: [searchHit(1), searchHit(2, { pull_request: { merged_at: null } })] },
     });
     const plan = planRead<{ items: Array<{ number: number; isPull: boolean }>; totalOpen: number | null; totalClosed: number | null }>(
       client,
@@ -98,19 +95,44 @@ describe("planRead: lists", () => {
 
     const result = await plan.run(signal);
 
-    const listCall = calls.find((c) => c.path === "/search/issues" && c.query?.per_page === 30);
-    expect(listCall?.query).toMatchObject({
+    const searchCalls = calls.filter((c) => c.path === "/search/issues");
+    expect(searchCalls).toHaveLength(1);
+    expect(searchCalls[0].query).toMatchObject({
       q: 'repo:o/r is:issue label:"bug" flaky state:open',
       sort: "created",
       order: "desc",
       per_page: 30,
       page: 1,
     });
-    const countCall = calls.find((c) => c.path === "/search/issues" && c.query?.per_page === 1);
-    expect(countCall?.query?.q).toBe('repo:o/r is:issue label:"bug" flaky state:closed');
     expect(result.items.map((i) => i.number)).toEqual([1, 2]);
     expect(result.totalOpen).toBe(3);
-    expect(result.totalClosed).toBe(12);
+    // The other state's count is the /count route's job, not the list's.
+    expect(result.totalClosed).toBeNull();
+  });
+
+  it("/count asks for the other state under the same qualifiers, one result per page", async () => {
+    const { client, calls } = fakeClient({
+      "GET /search/issues": { total_count: 12, items: [] },
+    });
+    const plan = planRead<{ count: number | null }>(client, "/count?repo=o%2Fr&state=closed&labels=bug&q=flaky&kind=issue");
+    const result = await plan.run(signal);
+    const call = calls.find((c) => c.path === "/search/issues");
+    expect(call?.query).toMatchObject({ q: 'repo:o/r is:issue label:"bug" flaky state:closed', per_page: 1 });
+    expect(result.count).toBe(12);
+  });
+
+  it("/count does not remember a failure as null", async () => {
+    let fail = true;
+    const { client } = fakeClient({
+      "GET /search/issues": () => {
+        if (fail) throw new Error("secondary rate limit");
+        return { total_count: 7, items: [] };
+      },
+    });
+    const plan = planRead<{ count: number | null }>(client, "/count?repo=o%2Fr2&state=closed&kind=pull");
+    await expect(plan.run(signal)).rejects.toThrow();
+    fail = false;
+    expect((await plan.run(signal)).count).toBe(7);
   });
 
   it("lists pulls as is:pr and marks every row as a pull", async () => {

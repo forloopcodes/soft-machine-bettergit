@@ -1,9 +1,9 @@
 import type { PluginMeta } from "@soft-machine/sdk";
 
 export const FORGE_META: PluginMeta = {
-  id: "forge",
-  label: "PRs & Issues",
-  shortLabel: "PRI",
+  id: "bettergit",
+  label: "bettergit",
+  shortLabel: "BG",
   color: "#3fb950",
   description:
     "Browse, triage, and act on GitHub pull requests and issues through the workspace's GitHub connection, synced live, with full-context handoff to the agent",
@@ -22,24 +22,24 @@ export const FORGE_META: PluginMeta = {
   // (manifestParity.test.ts pins the JSON side).
   panels: [
     {
-      id: "forge-pulls",
+      id: "bettergit-pulls",
       title: "Pull Requests",
-      layout: { width: 380, minWidth: 280 },
+      layout: { width: 640, minWidth: "large" },
     },
     {
-      id: "forge-issues",
+      id: "bettergit-issues",
       title: "Issues",
-      layout: { width: 380, minWidth: 280 },
+      layout: { width: 640, minWidth: "large" },
     },
     {
-      id: "forge-pull-detail",
+      id: "bettergit-pull-detail",
       title: "Pull Detail",
-      layout: { width: 420, minWidth: 300 },
+      layout: { width: 480, minWidth: "large" },
     },
     {
-      id: "forge-issue-detail",
+      id: "bettergit-issue-detail",
       title: "Issue Detail",
-      layout: { width: 420, minWidth: 300 },
+      layout: { width: 480, minWidth: "large" },
     },
   ],
   panelExtensions: [],

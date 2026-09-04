@@ -33,6 +33,9 @@ export interface ForgeRepo {
   defaultBranch: string | null;
   private: boolean;
   webUrl: string;
+  /** Last push (GitHub's pushed_at, falling back to updated_at); null when
+   *  unknown. Drives the "most recent work" order of the GitHub list. */
+  pushedAt: string | null;
   /** Checkout path on the workspace machine when the repo is cloned there. */
   localPath?: string | null;
 }

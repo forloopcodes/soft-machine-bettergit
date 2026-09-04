@@ -1,5 +1,5 @@
 /**
- * Forge Plugin Module
+ * bettergit Plugin Module
  *
  * Registration for the GitHub pull-request and issue panels. Data flows
  * from the plugin's VM bridge (a machine service declared in the manifest,
@@ -19,17 +19,17 @@ import type {
 import manifest from "../../soft-machine.plugin.json";
 import { FORGE_META } from "./meta";
 import { ForgeProviderComponent, useForge } from "./ForgeContext";
-import { ForgeToolbar } from "./ForgeToolbar";
+import { SETTINGS_DECLARATIONS } from "./settings";
 import {
-  IssuesPanel,
-  IssuesHeaderActions,
-  PullsPanel,
-  PullsHeaderActions,
+  DetailHeaderActions,
   IssueDetailPanel,
+  IssuesPanel,
+  ListHeaderActions,
   PullDetailPanel,
+  PullsPanel,
 } from "./panels";
 
-// The Forge module is plain JS with no WASM dependency, and data problems
+// The module is plain JS with no WASM dependency, and data problems
 // (missing credential, rate limit, network) are recoverable and rendered
 // inside the panels; they must never escalate to the editor-level boot
 // error page, so this is intentionally constant.
@@ -78,7 +78,7 @@ function useForgeSimulation(): PluginSimulation {
     () => ({
       isRunning: false,
       run: () => {
-        /* no-op: Forge has no simulation loop */
+        /* no-op: no simulation loop */
       },
       stop: () => {
         /* no-op */
@@ -99,8 +99,14 @@ function useForgeInitialization(): PluginInitialization {
   return useMemo(() => ({ clear, refresh }), [clear, refresh]);
 }
 
+// Layouts must mirror meta.ts and soft-machine.plugin.json exactly
+// (manifestParity.test.ts pins the JSON side). The list panels host a
+// sidebar and default wide enough to show it; the details are narrower.
+const LIST_LAYOUT = { width: 640, minWidth: "large" } as const;
+const DETAIL_LAYOUT = { width: 480, minWidth: "large" } as const;
+
 export const forgeModule: PluginModule = {
-  id: "forge",
+  id: "bettergit",
   meta: FORGE_META,
   // The bridge is the plugin's only compute demand; the Provider consumes
   // the machine-services layer to start it and learn its URL.
@@ -110,42 +116,52 @@ export const forgeModule: PluginModule = {
   Provider: ForgeProviderComponent,
   panels: [
     {
-      id: "forge-pulls",
+      id: "bettergit-pulls",
       title: "Pull Requests",
-      icon: createElement(Icon, { name: "GitMerge", size: 16 }),
+      description: "Pull requests for the selected repository, with an in-panel detail view.",
+      icon: createElement(Icon, { name: "GitPullRequest", size: 16 }),
       component: PullsPanel,
-      headerActions: PullsHeaderActions,
+      headerActions: ListHeaderActions,
       isCanvas: false,
-      layout: { width: 380, minWidth: 280 },
+      layout: LIST_LAYOUT,
     },
     {
-      id: "forge-issues",
+      id: "bettergit-issues",
       title: "Issues",
-      icon: createElement(Icon, { name: "AlertCircle", size: 16 }),
+      description: "Issues for the selected repository, with an in-panel detail view.",
+      icon: createElement(Icon, { name: "CircleDot", size: 16 }),
       component: IssuesPanel,
-      headerActions: IssuesHeaderActions,
+      headerActions: ListHeaderActions,
       isCanvas: false,
-      layout: { width: 380, minWidth: 280 },
+      layout: LIST_LAYOUT,
     },
     {
-      id: "forge-pull-detail",
+      id: "bettergit-pull-detail",
       title: "Pull Detail",
-      icon: createElement(Icon, { name: "GitBranch", size: 16 }),
+      description: "One pull request: conversation, checks, files and reviews.",
+      icon: createElement(Icon, { name: "GitMerge", size: 16 }),
       component: PullDetailPanel,
+      headerActions: DetailHeaderActions,
       isCanvas: false,
-      layout: { width: 420, minWidth: 300 },
+      layout: DETAIL_LAYOUT,
     },
     {
-      id: "forge-issue-detail",
+      id: "bettergit-issue-detail",
       title: "Issue Detail",
+      description: "One issue: description, comments and labels.",
       icon: createElement(Icon, { name: "FileText", size: 16 }),
       component: IssueDetailPanel,
+      headerActions: DetailHeaderActions,
       isCanvas: false,
-      layout: { width: 420, minWidth: 300 },
+      layout: DETAIL_LAYOUT,
     },
-  ],
+  ] as PluginModule["panels"],
   panelExtensions: [],
-  toolbar: { component: ForgeToolbar },
+  // Everything a toolbar would hold lives in each panel's own top bar.
+  toolbar: { component: () => null },
+  // Host-rendered under Settings → Plugins → bettergit; read back with
+  // usePluginSettings (needs the "os" provider tier declared above).
+  settings: { declarations: [...SETTINGS_DECLARATIONS] } as PluginModule["settings"],
 
   useLoadingState: useForgeLoadingState,
   usePersistence: useForgePersistence,

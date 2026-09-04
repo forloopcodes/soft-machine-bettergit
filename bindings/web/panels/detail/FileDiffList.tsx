@@ -1,46 +1,42 @@
 /**
- * FileDiffList: the Pull Detail panel's changed-files viewer, in the Git
- * panel's file-capsule treatment: one bordered capsule per file with a
- * chevron header (status letter, name, +/- counts) that expands into the
- * unified diff (green/red lines, muted context, hunk separators).
+ * Changed-files viewer: one bordered capsule per file with a chevron
+ * header (status letter, left-truncated path, +/- counts) that expands
+ * into the unified diff. Hover snaps; only the chevron rotates.
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import styled from "styled-components";
-import { ANIMATION, Icon, t } from "@soft-machine/sdk";
-import { parsePatch, type ForgePullFile } from "../types";
-import { STATE_COLORS } from "./shared";
-
-function statusInfo(status: string): { label: string; color: string } {
-  switch (status) {
-    case "added":
-      return { label: "A", color: STATE_COLORS.open };
-    case "removed":
-      return { label: "D", color: STATE_COLORS.closed };
-    case "renamed":
-      return { label: "R", color: STATE_COLORS.merged };
-    default:
-      return { label: "M", color: "#f59e0b" };
-  }
-}
+import { Icon, t } from "@soft-machine/sdk";
+import { parsePatch, type ForgePullFile } from "../../types";
+import { CodeLine } from "../../highlight/CodeLine";
+import { languageForFile } from "../../highlight/language";
+import { Count, DIFF_COLORS, STATE_COLORS, fileStatusVisual } from "../../ui";
+import { Capsule } from "./shared";
 
 function FileCapsule({ file }: { file: ForgePullFile }) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const info = statusInfo(file.status);
+  const info = fileStatusVisual(file.status);
   const canExpand = file.patch !== null;
+  const language = useMemo(() => languageForFile(file.filename), [file.filename]);
+  const lines = useMemo(
+    () => (isExpanded && file.patch !== null ? parsePatch(file.patch) : []),
+    [isExpanded, file.patch]
+  );
 
   return (
     <Capsule>
       <CapsuleHeader
+        type="button"
         onClick={() => canExpand && setIsExpanded(!isExpanded)}
-        $expandable={canExpand}
+        aria-expanded={isExpanded}
+        disabled={!canExpand}
       >
-        <CapsuleChevron $isExpanded={isExpanded} $visible={canExpand}>
-          <Icon name="ChevronRight" size={11} />
-        </CapsuleChevron>
+        <Chevron $isExpanded={isExpanded} $visible={canExpand}>
+          <Icon name="ChevronRight" size={12} />
+        </Chevron>
         <StatusBadge style={{ color: info.color }}>{info.label}</StatusBadge>
         <FileName title={file.filename}>{file.filename}</FileName>
-        <CapsuleSpacer />
+        <HeaderSpacer />
         {(file.additions > 0 || file.deletions > 0) && (
           <FileStat>
             <Additions>+{file.additions}</Additions>
@@ -51,18 +47,22 @@ function FileCapsule({ file }: { file: ForgePullFile }) {
       {isExpanded && file.patch !== null && (
         <CapsuleDiff>
           <DiffBlock>
-            {parsePatch(file.patch).map((line, i) =>
+            {lines.map((line, i) =>
               line.kind === "hunk" ? (
                 <HunkLine key={i}>{line.content}</HunkLine>
               ) : line.kind === "context" ? (
                 <ContextLine key={i}>
                   <LinePrefix> </LinePrefix>
-                  <LineContent>{line.content}</LineContent>
+                  <LineContent>
+                    <CodeLine text={line.content} language={language} />
+                  </LineContent>
                 </ContextLine>
               ) : (
-                <ChangedLine key={i} $type={line.kind}>
+                <ChangedLine key={i} $type={line.kind} $highlighted={language !== null}>
                   <LinePrefix>{line.kind === "add" ? "+" : "-"}</LinePrefix>
-                  <LineContent>{line.content}</LineContent>
+                  <LineContent>
+                    <CodeLine text={line.content} language={language} />
+                  </LineContent>
                 </ChangedLine>
               )
             )}
@@ -91,50 +91,47 @@ export function FileDiffList({ files }: { files: ForgePullFile[] }) {
 const ListWrap = styled.div`
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
 `;
 
-const Capsule = styled.div`
-  display: flex;
-  flex-direction: column;
-  background: ${t.bg.tertiary};
-  border: ${t.borderWidth} solid ${t.border};
-  border-radius: calc(${t.radius} * 1.25);
-  overflow: hidden;
-  transition: border-color ${ANIMATION.fast};
-
-  &:hover {
-    border-color: color-mix(in srgb, ${t.text.muted} 35%, ${t.border});
-  }
-`;
-
-const CapsuleHeader = styled.div<{ $expandable: boolean }>`
+const CapsuleHeader = styled.button`
   display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
   padding: 5px 10px 5px 4px;
-  cursor: ${(p) => (p.$expandable ? "pointer" : "default")};
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
   user-select: none;
   min-width: 0;
+  &:disabled {
+    cursor: default;
+  }
 `;
 
-const CapsuleChevron = styled.span<{ $isExpanded: boolean; $visible: boolean }>`
-  display: flex;
-  align-items: center;
-  justify-content: center;
+const Chevron = styled.span<{ $isExpanded: boolean; $visible: boolean }>`
+  display: inline-grid;
+  place-items: center;
   width: 16px;
   height: 16px;
   color: ${t.text.muted};
   flex-shrink: 0;
-  visibility: ${(p) => (p.$visible ? "visible" : "hidden")};
-  transform: rotate(${(p) => (p.$isExpanded ? 90 : 0)}deg);
-  transition: transform ${ANIMATION.fast};
+  visibility: ${({ $visible }) => ($visible ? "visible" : "hidden")};
+  transform: rotate(${({ $isExpanded }) => ($isExpanded ? 90 : 0)}deg);
+  transition: transform 0.15s ease;
+  @media (prefers-reduced-motion: reduce) {
+    transition: none;
+  }
 `;
 
 const StatusBadge = styled.span`
-  font-size: ${t.typography.micro};
-  font-weight: 600;
   font-family: ${t.fontMono};
+  font-size: ${t.typographyMono.micro};
+  font-weight: 600;
   min-width: 12px;
   text-align: center;
   flex-shrink: 0;
@@ -142,7 +139,7 @@ const StatusBadge = styled.span`
 
 const FileName = styled.span`
   font-family: ${t.fontMono};
-  font-size: ${t.typography.micro};
+  font-size: ${t.typographyMono.micro};
   color: ${t.text.secondary};
   overflow: hidden;
   text-overflow: ellipsis;
@@ -152,7 +149,7 @@ const FileName = styled.span`
   min-width: 0;
 `;
 
-const CapsuleSpacer = styled.span`
+const HeaderSpacer = styled.span`
   flex: 1;
   min-width: 0;
 `;
@@ -163,22 +160,17 @@ const FileStat = styled.span`
   flex-shrink: 0;
 `;
 
-const Additions = styled.span`
+export const Additions = styled(Count)`
   color: ${STATE_COLORS.open};
-  font-family: ${t.fontMono};
-  font-size: ${t.typography.micro};
 `;
 
-const Deletions = styled.span`
+export const Deletions = styled(Count)`
   color: ${STATE_COLORS.closed};
-  font-family: ${t.fontMono};
-  font-size: ${t.typography.micro};
 `;
 
 const CapsuleDiff = styled.div`
   border-top: ${t.borderWidth} solid ${t.border};
   background: ${t.bg.secondary};
-  cursor: default;
 `;
 
 const DiffMeta = styled.div`
@@ -192,7 +184,7 @@ const DiffBlock = styled.div`
   display: flex;
   flex-direction: column;
   font-family: ${t.fontMono};
-  font-size: ${t.typography.micro};
+  font-size: ${t.typographyMono.micro};
   line-height: 1.5;
   padding: 4px 0;
   overflow-x: auto;
@@ -211,24 +203,34 @@ const LineContent = styled.span`
   white-space: pre;
 `;
 
-const ChangedLine = styled.div<{ $type: "add" | "del" }>`
+/* With a known language the wash alone marks the change and tokens keep
+   their syntax colors (the +/- prefix stays green/red); without one the
+   whole line takes the Git panel's diff text color. */
+const ChangedLine = styled.div<{ $type: "add" | "del"; $highlighted: boolean }>`
   display: flex;
   align-items: flex-start;
   gap: 4px;
   padding: 0 10px;
-  background: ${(p) =>
-    p.$type === "add" ? "rgba(34, 197, 94, 0.15)" : "rgba(239, 68, 68, 0.15)"};
-  color: ${(p) => (p.$type === "add" ? "#86efac" : "#fca5a5")};
+  background: ${({ $type }) => ($type === "add" ? DIFF_COLORS.addWash : DIFF_COLORS.delWash)};
+  color: ${({ $type, $highlighted }) =>
+    $highlighted ? t.text.primary : $type === "add" ? DIFF_COLORS.addText : DIFF_COLORS.delText};
   white-space: pre;
   min-width: 0;
+  & > ${() => LinePrefix} {
+    color: ${({ $type }) => ($type === "add" ? DIFF_COLORS.addText : DIFF_COLORS.delText)};
+    opacity: 1;
+  }
 `;
 
+/* Unchanged lines are quiet: highlighted tokens are dimmed as a whole so
+   the changed lines stay the loudest thing in the block. */
 const ContextLine = styled.div`
   display: flex;
   align-items: flex-start;
   gap: 4px;
   padding: 0 10px;
   color: ${t.text.muted};
+  opacity: 0.75;
   white-space: pre;
   min-width: 0;
 `;
@@ -239,7 +241,6 @@ const HunkLine = styled.div`
   font-style: italic;
   user-select: none;
   border-top: ${t.borderWidth} solid ${t.border};
-
   &:first-child {
     border-top: none;
   }

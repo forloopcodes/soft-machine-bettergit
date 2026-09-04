@@ -261,7 +261,7 @@ describe("describeError", () => {
 describe("chatMessageFor", () => {
   it("names the item and carries the context verbatim", () => {
     const message = chatMessageFor("o/r#5", "## Issue o/r#5: title");
-    expect(message.startsWith("Shared from the PRs & Issues panel: o/r#5")).toBe(true);
+    expect(message.startsWith("Shared from the bettergit panel: o/r#5")).toBe(true);
     expect(message).toContain("## Issue o/r#5: title");
   });
 });

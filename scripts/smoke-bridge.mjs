@@ -42,10 +42,10 @@ const listen = (server) =>
 async function main() {
   let bridgePort = 0;
 
-  // 1. Fake authority: /svc/forge/github-bridge/<rest>?token=T → bridge/<rest>
+  // 1. Fake authority: /svc/bettergit/github-bridge/<rest>?token=T → bridge/<rest>
   const authority = http.createServer((req, res) => {
     const url = new URL(req.url, "http://authority.local");
-    const prefix = "/svc/forge/github-bridge/";
+    const prefix = "/svc/bettergit/github-bridge/";
     if (!url.pathname.startsWith(prefix) || url.searchParams.get("token") !== GOOD_TOKEN) {
       res.writeHead(401, { "content-type": "application/json" });
       return res.end('{"error":"unauthorized"}');
@@ -89,7 +89,7 @@ async function main() {
 
   const direct = (route, init = {}) => fetch(`http://127.0.0.1:${bridgePort}${route}`, init);
   const viaProxy = (route, init = {}) =>
-    fetch(`http://127.0.0.1:${authorityPort}/svc/forge/github-bridge/${route.replace(/^\//, "")}${route.includes("?") ? "&" : "?"}token=${GOOD_TOKEN}`, {
+    fetch(`http://127.0.0.1:${authorityPort}/svc/bettergit/github-bridge/${route.replace(/^\//, "")}${route.includes("?") ? "&" : "?"}token=${GOOD_TOKEN}`, {
       ...init,
       headers: { ...(init.headers ?? {}), authorization: `Bearer ${GOOD_TOKEN}` },
     });
@@ -99,7 +99,7 @@ async function main() {
   check("no token → 401", r.status === 401);
   r = await direct("/whoami", { headers: { authorization: `Bearer ${BAD_TOKEN}` } });
   check("unknown token → 401 (loopback validation rejects)", r.status === 401);
-  r = await direct("/whoami", { headers: { authorization: `Bearer ${GOOD_TOKEN}`, "x-forwarded-prefix": "/svc/forge/github-bridge" } });
+  r = await direct("/whoami", { headers: { authorization: `Bearer ${GOOD_TOKEN}`, "x-forwarded-prefix": "/svc/bettergit/github-bridge" } });
   check("valid token presented directly (as through the gate) → 200", r.status === 200, await r.clone().text());
   const who = await r.json().catch(() => null);
   check("whoami reports a credential", who && who.mode !== "none", JSON.stringify(who));

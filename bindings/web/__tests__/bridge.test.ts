@@ -6,21 +6,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { classifyFailure, createBridgeClient, githubDetail, parseBridgeBaseUrl } from "../github/bridge";
 
-const BASE = "https://sm-ws-x.fly.dev/svc/forge/github-bridge/?token=sc_abcDEF123_-xyz";
+const BASE = "https://sm-ws-x.fly.dev/svc/bettergit/github-bridge/?token=sc_abcDEF123_-xyz";
 
 describe("parseBridgeBaseUrl", () => {
   it("splits origin, prefix, and token, and keys the endpoint without the token", () => {
     expect(parseBridgeBaseUrl(BASE)).toEqual({
       origin: "https://sm-ws-x.fly.dev",
-      prefix: "/svc/forge/github-bridge/",
+      prefix: "/svc/bettergit/github-bridge/",
       token: "sc_abcDEF123_-xyz",
-      key: "https://sm-ws-x.fly.dev/svc/forge/github-bridge/",
+      key: "https://sm-ws-x.fly.dev/svc/bettergit/github-bridge/",
     });
-    expect(parseBridgeBaseUrl("https://h/svc/forge/github-bridge?token=t")?.prefix).toBe("/svc/forge/github-bridge/");
+    expect(parseBridgeBaseUrl("https://h/svc/bettergit/github-bridge?token=t")?.prefix).toBe("/svc/bettergit/github-bridge/");
   });
 
   it("rejects URLs without a token or that do not parse", () => {
-    expect(parseBridgeBaseUrl("https://h/svc/forge/github-bridge/")).toBeNull();
+    expect(parseBridgeBaseUrl("https://h/svc/bettergit/github-bridge/")).toBeNull();
     expect(parseBridgeBaseUrl("not a url")).toBeNull();
   });
 });
@@ -91,7 +91,7 @@ describe("createBridgeClient", () => {
 
     expect(result).toEqual([{ number: 1 }]);
     expect(calls[0].url).toBe(
-      "https://sm-ws-x.fly.dev/svc/forge/github-bridge/gh/repos/o/r/issues?state=open&per_page=30&token=sc_abcDEF123_-xyz"
+      "https://sm-ws-x.fly.dev/svc/bettergit/github-bridge/gh/repos/o/r/issues?state=open&per_page=30&token=sc_abcDEF123_-xyz"
     );
     const headers = calls[0].init.headers as Record<string, string>;
     expect(headers.authorization).toBe("Bearer sc_abcDEF123_-xyz");
@@ -133,6 +133,6 @@ describe("createBridgeClient", () => {
     const calls = mockFetch(200, { repositories: [{ path: "/workspace/x", origin: "https://github.com/o/r" }] });
     const client = createBridgeClient(BASE)!;
     expect(await client.localRepos()).toEqual([{ path: "/workspace/x", origin: "https://github.com/o/r" }]);
-    expect(calls[0].url).toBe("https://sm-ws-x.fly.dev/svc/forge/github-bridge/local/repos?token=sc_abcDEF123_-xyz");
+    expect(calls[0].url).toBe("https://sm-ws-x.fly.dev/svc/bettergit/github-bridge/local/repos?token=sc_abcDEF123_-xyz");
   });
 });

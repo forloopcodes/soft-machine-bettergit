@@ -1,7 +1,7 @@
 {
-  "name": "soft-machine-plugin-forge",
+  "name": "soft-machine-bettergit",
   "private": true,
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "GitHub PRs & Issues panels for Soft-Machine, backed by the workspace's GitHub connection",
   "scripts": {
     "test": "vitest run",
@@ -11,5 +11,8 @@
   },
   "devDependencies": {
     "vitest": "^5.0.0"
+  },
+  "dependencies": {
+    "prismjs": "^1.30.0"
   }
 }

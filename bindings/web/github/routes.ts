@@ -137,11 +137,16 @@ async function countFor(client: BridgeClient, q: string, signal: AbortSignal): P
   if (cached?.promise) return cached.promise;
   const promise = client
     .github<SearchResponse>("GET", "/search/issues", { query: { q, per_page: 1 }, signal })
-    .then((r) => (typeof r.total_count === "number" ? r.total_count : null))
-    .catch(() => null)
-    .then((value) => {
+    .then((r) => {
+      const value = typeof r.total_count === "number" ? r.total_count : null;
       countCache.set(key, { at: Date.now(), value, promise: null });
       return value;
+    })
+    .catch((err: unknown) => {
+      // A failed or aborted count must not be remembered as "null" for the
+      // whole cache window; keep whatever we had and let the caller retry.
+      countCache.set(key, { at: cached?.at ?? 0, value: cached?.value ?? null, promise: null });
+      throw err;
     });
   countCache.set(key, { at: cached?.at ?? 0, value: cached?.value ?? null, promise });
   return promise;
@@ -186,24 +191,21 @@ async function fetchList<T>(
   signal: AbortSignal
 ): Promise<ListResponse<T>> {
   const q = buildSearchQuery(kind, repo, filters);
-  const otherState = filters.state === "open" ? "closed" : "open";
-  const otherQ = `${searchQualifiers(kind, repo, filters)} state:${otherState}`;
   let page: SearchResponse;
-  let otherCount: number | null;
   try {
-    [page, otherCount] = await Promise.all([
-      client.github<SearchResponse>("GET", "/search/issues", {
-        query: {
-          q,
-          sort: filters.sort,
-          order: "desc",
-          per_page: LIST_PAGE_SIZE,
-          page: filters.page,
-        },
-        signal,
-      }),
-      countFor(client, otherQ, signal),
-    ]);
+    // One request: the page carries its own total. The opposite state's
+    // count is its own route (/count) so the list never waits on it and a
+    // failed count retries on its own schedule.
+    page = await client.github<SearchResponse>("GET", "/search/issues", {
+      query: {
+        q,
+        sort: filters.sort,
+        order: "desc",
+        per_page: LIST_PAGE_SIZE,
+        page: filters.page,
+      },
+      signal,
+    });
   } catch (err) {
     if (err instanceof ForgeError && err.code === "validation" && SEARCH_MISSING_REPO_RE.test(err.detail)) {
       throw await explainMissingRepo(client, repo, signal);
@@ -213,9 +215,21 @@ async function fetchList<T>(
   const total = typeof page.total_count === "number" ? page.total_count : null;
   return {
     items: (page.items ?? []).map(normalize),
-    totalOpen: filters.state === "open" ? total : otherCount,
-    totalClosed: filters.state === "closed" ? total : otherCount,
+    totalOpen: filters.state === "open" ? total : null,
+    totalClosed: filters.state === "closed" ? total : null,
   };
+}
+
+/** Result count for one state under the same qualifiers as the list. */
+async function fetchCount(
+  client: BridgeClient,
+  kind: "issue" | "pull",
+  repo: string,
+  filters: ListFilters,
+  signal: AbortSignal
+): Promise<{ count: number | null }> {
+  const q = `${searchQualifiers(kind, repo, filters)} state:${filters.state}`;
+  return { count: await countFor(client, q, signal) };
 }
 
 async function fetchAllPages<T>(
@@ -254,6 +268,7 @@ async function workspaceRepos(client: BridgeClient, signal: AbortSignal): Promis
       defaultBranch: null,
       private: false,
       webUrl: `https://github.com/${parsed.repo}`,
+      pushedAt: null,
       localPath: path,
     });
   }
@@ -320,8 +335,12 @@ async function fetchRepos(client: BridgeClient, search: string, signal: AbortSig
     seen.add(key);
     return true;
   });
+  // Most recent work first: /user/repos is server-sorted by update, but an
+  // installation's pages arrive in id order, so sort here for both.
+  const byRecent = (a: ForgeRepo, b: ForgeRepo) =>
+    (b.pushedAt ? Date.parse(b.pushedAt) : 0) - (a.pushedAt ? Date.parse(a.pushedAt) : 0);
   return {
-    repos: [...local.filter(matches), ...remoteUnique.filter(matches).slice(0, REPO_LIST_MAX)],
+    repos: [...local.filter(matches), ...remoteUnique.filter(matches).sort(byRecent).slice(0, REPO_LIST_MAX)],
   };
 }
 
@@ -343,6 +362,17 @@ const READ_ROUTES: Record<string, { pollMs: number; run: RouteHandler }> = {
     pollMs: POLL.list,
     run: (client, params, signal) =>
       fetchList<ForgePull>(client, "pull", requireRepo(params), parseListFilters(params), toPullFromIssue, signal),
+  },
+  "/count": {
+    pollMs: POLL.counts,
+    run: (client, params, signal) =>
+      fetchCount(
+        client,
+        params.get("kind") === "pull" ? "pull" : "issue",
+        requireRepo(params),
+        parseListFilters(params),
+        signal
+      ),
   },
   "/labels": {
     pollMs: POLL.reference,
