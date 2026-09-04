@@ -12,13 +12,13 @@
  * context to the agent.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOpenPanelSafe } from "@soft-machine/sdk";
 import { useForge } from "./ForgeContext";
 import { chatMessageFor } from "./agentContext";
 import { localReposPlan, planRead, runMutation } from "./github/routes";
 import { useQuery } from "./query/useQuery";
-import { describeError, firstForgeRemote } from "./types";
+import { ForgeError, REPO_RE, describeError, firstForgeRemote } from "./types";
 
 export interface ForgeQuery<T> {
   data: T | null;
@@ -32,18 +32,37 @@ export interface ForgeQuery<T> {
  * null disables the read entirely.
  */
 export function useForgeQuery<T>(path: string | null): ForgeQuery<T> {
-  const { client, isConnected } = useForge();
+  const { client, isConnected, repo, setRepo } = useForge();
   const plan = useMemo(
     () => (client && isConnected && path !== null ? planRead<T>(client, path) : null),
     [client, isConnected, path]
   );
   const query = useQuery<T>(plan);
 
+  // Keep the previous answer on screen while a NEW key (filter change, next
+  // page, repo switch within the same panel) is in flight, so the list
+  // never flashes to "Loading…" between two populated states. Cleared when
+  // the read is disabled so a disconnected panel shows its true state.
+  const previous = useRef<{ key: string; data: T } | null>(null);
+  if (plan && query.data !== undefined) previous.current = { key: plan.key, data: query.data };
+  if (!plan) previous.current = null;
+  const carried = plan && query.data === undefined && query.error === null ? previous.current?.data : undefined;
+
+  // A renamed or transferred repository: GitHub told us where it lives now,
+  // so follow it instead of leaving every panel on a dead name. Idempotent
+  // across co-mounted panels (all compare against the same selection).
+  const moved = query.error instanceof ForgeError && query.error.code === "repo_moved" ? query.error.detail : null;
+  useEffect(() => {
+    if (moved && repo && REPO_RE.test(moved) && moved.toLowerCase() !== repo.toLowerCase()) {
+      setRepo(moved);
+    }
+  }, [moved, repo, setRepo]);
+
   return {
-    data: query.data ?? null,
+    data: query.data ?? carried ?? null,
     // A background refetch must not blank an already-rendered list, so
-    // loading is only surfaced while there is no data yet.
-    isLoading: plan !== null && query.data === undefined && query.error === null,
+    // loading is only surfaced while there is nothing to show at all.
+    isLoading: plan !== null && query.data === undefined && carried === undefined && query.error === null,
     error: plan !== null && query.error !== null ? describeError(query.error) : null,
   };
 }

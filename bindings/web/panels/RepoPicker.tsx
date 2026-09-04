@@ -6,19 +6,20 @@
  * GitHub-wide list. Picking one sets the shared repo for every panel.
  */
 
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import styled from "styled-components";
-import {
-  Dropdown,
-  DropdownItem,
-  DropdownSectionLabel,
-  Icon,
-  t,
-  useDebounce,
-} from "@soft-machine/sdk";
+import { Dropdown, DropdownItem, DropdownSectionLabel, Icon, t } from "@soft-machine/sdk";
 import { REPO_RE, type ForgeRepo } from "../types";
 import { useForge } from "../ForgeContext";
+import { filterRepos } from "../github/filterRepos";
 import { useForgeQuery } from "../hooks";
+
+/** GitHub rows shown before the user types anything. */
+const GITHUB_PREVIEW = 8;
+/** GitHub rows shown for a query; beyond this the hint asks for more letters. */
+const GITHUB_RESULTS_MAX = 30;
+/** Rows visible before the list scrolls (about ten rows). */
+const LIST_MAX_HEIGHT = "300px";
 
 interface RepoPickerProps {
   trigger: (args: { toggle: () => void; isOpen: boolean }) => ReactNode;
@@ -29,18 +30,21 @@ interface RepoPickerProps {
 export function RepoPicker({ trigger, align = "start", width = 280 }: RepoPickerProps) {
   const { repo, setRepo } = useForge();
   const [search, setSearch] = useState("");
-  const debouncedSearch = useDebounce(search, 300);
-  const repos =
-    useForgeQuery<{ repos: ForgeRepo[] }>(
-      debouncedSearch.trim() ? `/repos?q=${encodeURIComponent(debouncedSearch.trim())}` : "/repos"
-    ).data?.repos ?? [];
+  // One cached list for the whole session (it is fetched as soon as a panel
+  // mounts, so the menu opens warm); filtering happens here, per keystroke.
+  const { data, isLoading } = useForgeQuery<{ repos: ForgeRepo[] }>("/repos");
+  const typed = search.trim();
+  const matching = useMemo(() => filterRepos(data?.repos ?? [], typed), [data, typed]);
 
   // Checkouts on this machine lead; the credential's GitHub-wide list follows.
-  const workspaceRepos = repos.filter((r) => r.localPath);
-  const githubRepos = repos.filter((r) => !r.localPath);
-  const typed = search.trim();
+  const workspaceRepos = matching.filter((r) => r.localPath);
+  const githubRepos = matching.filter((r) => !r.localPath);
+  // Without a query the GitHub list is a short preview, not a wall: the
+  // search box is the way to reach the rest.
+  const shownGithub = typed ? githubRepos.slice(0, GITHUB_RESULTS_MAX) : githubRepos.slice(0, GITHUB_PREVIEW);
+  const hiddenGithub = githubRepos.length - shownGithub.length;
   const customRepo =
-    REPO_RE.test(typed) && !repos.some((r) => r.fullName.toLowerCase() === typed.toLowerCase())
+    REPO_RE.test(typed) && !matching.some((r) => r.fullName.toLowerCase() === typed.toLowerCase())
       ? typed
       : null;
 
@@ -67,6 +71,7 @@ export function RepoPicker({ trigger, align = "start", width = 280 }: RepoPicker
                 if (e.key === "Enter" && customRepo) pick(customRepo);
               }}
             />
+            <RepoList>
             {/* A typed owner/name that isn't in either list is offered as-is,
                 so any repository the credential can reach is one keystroke
                 away. */}
@@ -96,10 +101,14 @@ export function RepoPicker({ trigger, align = "start", width = 280 }: RepoPicker
             )}
             <DropdownSectionLabel>
               {githubRepos.length === 0 && workspaceRepos.length === 0 && !customRepo
-                ? "No repositories"
+                ? isLoading
+                  ? "Loading repositories…"
+                  : typed
+                    ? "No matches"
+                    : "No repositories"
                 : "GitHub"}
             </DropdownSectionLabel>
-            {githubRepos.map((r) => (
+            {shownGithub.map((r) => (
               <DropdownItem key={r.id} onClick={() => pick(r.fullName)}>
                 <RepoRow $selected={r.fullName === repo}>
                   {r.private && <Icon name="Lock" size={10} />}
@@ -107,6 +116,14 @@ export function RepoPicker({ trigger, align = "start", width = 280 }: RepoPicker
                 </RepoRow>
               </DropdownItem>
             ))}
+            {hiddenGithub > 0 && (
+              <MoreHint>
+                {typed
+                  ? `${hiddenGithub} more match${hiddenGithub === 1 ? "" : "es"} — keep typing`
+                  : `${hiddenGithub} more — type to search`}
+              </MoreHint>
+            )}
+            </RepoList>
           </>
         );
       }}
@@ -129,6 +146,19 @@ const RepoSearchInput = styled.input`
   &:focus {
     border-color: ${t.accent.primary};
   }
+`;
+
+// The search box stays put; only the rows scroll.
+const RepoList = styled.div`
+  max-height: ${LIST_MAX_HEIGHT};
+  overflow-y: auto;
+  overflow-x: hidden;
+`;
+
+const MoreHint = styled.div`
+  padding: 6px 12px 8px;
+  font-size: ${t.typography.micro};
+  color: ${t.text.muted};
 `;
 
 const RepoRow = styled.span<{ $selected: boolean }>`

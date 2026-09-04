@@ -246,6 +246,16 @@ describe("describeError", () => {
       "GitHub refused the request for this repository."
     );
   });
+
+  it("explains moved and unavailable repositories and keeps GitHub's reason on generic failures", () => {
+    expect(describeError(new ForgeError("repo_moved", 301, "o/new"))).toContain("moved to o/new");
+    expect(describeError(new ForgeError("repo_unavailable", 404, "o/gone"))).toContain("o/gone");
+    expect(describeError(new ForgeError("github_unavailable", 502))).toContain("retry");
+    expect(describeError(new ForgeError("forge_error:418", 418, "I'm a teapot"))).toBe(
+      "GitHub returned an error: I'm a teapot"
+    );
+    expect(describeError(new ForgeError("not_found", 404, "Branch missing"))).toBe("Not found: Branch missing");
+  });
 });
 
 describe("chatMessageFor", () => {

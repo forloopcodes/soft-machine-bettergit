@@ -4,7 +4,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { classifyFailure, createBridgeClient, parseBridgeBaseUrl } from "../github/bridge";
+import { classifyFailure, createBridgeClient, githubDetail, parseBridgeBaseUrl } from "../github/bridge";
 
 const BASE = "https://sm-ws-x.fly.dev/svc/forge/github-bridge/?token=sc_abcDEF123_-xyz";
 
@@ -43,7 +43,28 @@ describe("classifyFailure", () => {
     expect(classifyFailure(405, { message: "Pull Request is not mergeable" }, true).code).toBe("not_mergeable");
     expect(classifyFailure(422, { message: "Validation Failed" }, true).code).toBe("validation");
     expect(classifyFailure(429, {}, true).code).toBe("rate_limited");
-    expect(classifyFailure(500, {}, true).code).toBe("forge_error:500");
+    expect(classifyFailure(500, {}, true).code).toBe("github_unavailable");
+    expect(classifyFailure(301, {}, true).code).toBe("not_found");
+    expect(classifyFailure(418, {}, true).code).toBe("forge_error:418");
+  });
+
+  it("surfaces the per-field reasons GitHub buries in errors[]", () => {
+    const error = classifyFailure(
+      422,
+      {
+        message: "Validation Failed",
+        errors: [
+          { message: "The listed users and repositories cannot be searched either because the resources do not exist or you do not have permission to view them.", resource: "Search", field: "q", code: "invalid" },
+          "duplicate-free string entry",
+        ],
+      },
+      true
+    );
+    expect(error.code).toBe("validation");
+    expect(error.detail).toContain("Validation Failed");
+    expect(error.detail).toContain("cannot be searched");
+    expect(error.detail).toContain("duplicate-free string entry");
+    expect(githubDetail({ message: "x", errors: [{ message: "x" }] })).toBe("x");
   });
 });
 

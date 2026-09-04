@@ -16,9 +16,35 @@ const bridge = require("../../vm/github-bridge.js") as {
   bearerToken: (req: { headers: Record<string, unknown> }) => string | null;
   isCleanPath: (p: string) => boolean;
   readOriginUrl: (dir: string) => string | null;
+  resolveRedirect: (method: string, location: unknown) => string | null;
   routeAllowed: (method: string, p: string) => boolean;
   scrubUrl: (url: string) => string;
 };
+
+describe("resolveRedirect", () => {
+  it("follows a renamed repository within the API and the allowlist", () => {
+    // GitHub redirects a renamed repo's routes to the id-addressed form.
+    expect(bridge.resolveRedirect("GET", "https://api.github.com/repositories/123/labels?per_page=100")).toBe(
+      "/repositories/123/labels?per_page=100"
+    );
+    expect(bridge.resolveRedirect("GET", "https://api.github.com/repositories/123")).toBe("/repositories/123");
+    expect(bridge.resolveRedirect("GET", "https://api.github.com/repos/o/new-name/labels?per_page=100")).toBe(
+      "/repos/o/new-name/labels?per_page=100"
+    );
+    expect(bridge.resolveRedirect("PATCH", "/repos/o/new-name/issues/4")).toBe("/repos/o/new-name/issues/4");
+  });
+
+  it("refuses other hosts, unclean paths, and routes outside the allowlist", () => {
+    expect(bridge.resolveRedirect("GET", "https://evil.example/repos/o/r/labels")).toBeNull();
+    expect(bridge.resolveRedirect("GET", "https://api.github.com/repos/o/r%2Fx/labels")).toBeNull();
+    expect(bridge.resolveRedirect("GET", "https://api.github.com/repos/o/r/actions/secrets")).toBeNull();
+    expect(bridge.resolveRedirect("GET", "https://api.github.com/repositories/123/actions/secrets")).toBeNull();
+    expect(bridge.resolveRedirect("DELETE", "https://api.github.com/repositories/123")).toBeNull();
+    expect(bridge.resolveRedirect("DELETE", "https://api.github.com/repos/o/r")).toBeNull();
+    expect(bridge.resolveRedirect("GET", undefined)).toBeNull();
+    expect(bridge.resolveRedirect("GET", "")).toBeNull();
+  });
+});
 
 describe("routeAllowed", () => {
   it("permits exactly the routes the panels use", () => {

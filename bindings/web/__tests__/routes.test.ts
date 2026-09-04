@@ -125,6 +125,58 @@ describe("planRead: lists", () => {
     expect(result.items[0]).toMatchObject({ isPull: true, mergedAt: "2026-02-01T00:00:00Z" });
   });
 
+  it("reports a renamed repository as moved, with its new name", async () => {
+    const searchFailure = new ForgeError(
+      "validation",
+      422,
+      "Validation Failed The listed users and repositories cannot be searched either because the resources do not exist or you do not have permission to view them."
+    );
+    const { client } = fakeClient({
+      "GET /search/issues": () => {
+        throw searchFailure;
+      },
+      // The bridge followed GitHub's redirect; the payload names the new home.
+      "GET /repos/o/old": { full_name: "o/new" },
+    });
+    await expect(planRead(client, "/issues?repo=o%2Fold&state=open").run(signal)).rejects.toMatchObject({
+      code: "repo_moved",
+      detail: "o/new",
+    });
+  });
+
+  it("reports a repository the credential cannot see as unavailable", async () => {
+    const { client } = fakeClient({
+      "GET /search/issues": () => {
+        throw new ForgeError("validation", 422, "Validation Failed The listed users and repositories cannot be searched");
+      },
+      // GET /repos/o/gone is absent: the fake answers 404.
+    });
+    await expect(planRead(client, "/pulls?repo=o%2Fgone&state=open").run(signal)).rejects.toMatchObject({
+      code: "repo_unavailable",
+      detail: "o/gone",
+    });
+    // Same name back from GitHub means "exists, but search can't see it".
+    const { client: same } = fakeClient({
+      "GET /search/issues": () => {
+        throw new ForgeError("validation", 422, "cannot be searched");
+      },
+      "GET /repos/o/r": { full_name: "O/R" },
+    });
+    await expect(planRead(same, "/issues?repo=o%2Fr&state=open").run(signal)).rejects.toMatchObject({ code: "repo_unavailable" });
+  });
+
+  it("passes other validation failures through untouched", async () => {
+    const { client } = fakeClient({
+      "GET /search/issues": () => {
+        throw new ForgeError("validation", 422, "Validation Failed: q is too long");
+      },
+    });
+    await expect(planRead(client, "/issues?repo=o%2Fr&state=open").run(signal)).rejects.toMatchObject({
+      code: "validation",
+      detail: "Validation Failed: q is too long",
+    });
+  });
+
   it("rejects an unsafe repo before any request is made", async () => {
     const { client, calls } = fakeClient({});
     await expect(planRead(client, "/issues?repo=..%2Fetc&state=open").run(signal)).rejects.toMatchObject({ code: "not_found" });
@@ -141,17 +193,23 @@ describe("planRead: repos", () => {
   it("lists installation repositories for a GitHub App credential and filters client-side", async () => {
     const { client, calls } = fakeClient(
       {
-        "GET /installation/repositories": {
-          repositories: [
-            { id: 1, full_name: "o/web-timer", private: false },
-            { id: 2, full_name: "o/other", private: true },
-          ],
-        },
+        "GET /installation/repositories": (call) =>
+          call.query?.page === 1
+            ? {
+                total_count: 2,
+                repositories: [
+                  { id: 1, full_name: "o/web-timer", private: false },
+                  { id: 2, full_name: "o/other", private: true },
+                ],
+              }
+            : { total_count: 2, repositories: [] },
       },
       { mode: "installation", login: null, repositoryCount: 2 }
     );
     const result = await planRead<{ repos: Array<{ fullName: string }> }>(client, "/repos?q=timer").run(signal);
-    expect(calls[0]).toMatchObject({ path: "/installation/repositories", query: { per_page: 100, page: 1 } });
+    // Pages 1 and 2 are requested together; the total says no third page.
+    const pages = calls.filter((c) => c.path === "/installation/repositories").map((c) => c.query?.page);
+    expect(pages).toEqual([1, 2]);
     expect(result.repos.map((r) => r.fullName)).toEqual(["o/web-timer"]);
   });
 

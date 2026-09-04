@@ -271,15 +271,54 @@ function githubRequest(method, pathWithQuery, body, token) {
   });
 }
 
-/** Call GitHub; on a 401 refresh the gh token once and retry. */
+const REDIRECT_STATUSES = new Set([301, 302, 307, 308]);
+const MAX_REDIRECTS = 3;
+
+/**
+ * Where a GitHub redirect points, if we are willing to follow it: same API
+ * origin, clean path, and still inside the route allowlist for this method.
+ * A renamed or transferred repository redirects every route under its old
+ * name to the id-addressed form `/repositories/<id>/…`; that is checked
+ * against the allowlist as if it were `/repos/<owner>/<name>/…`.
+ */
+function resolveRedirect(method, location) {
+  if (typeof location !== 'string' || !location) return null;
+  let target;
+  try {
+    target = new URL(location, GITHUB_API);
+  } catch {
+    return null;
+  }
+  if (target.origin !== GITHUB_API || !isCleanPath(target.pathname)) return null;
+  const canonical = target.pathname.replace(/^\/repositories\/\d{1,12}(?=\/|$)/, '/repos/_/_');
+  if (!routeAllowed(method, canonical)) return null;
+  return `${target.pathname}${target.search}`;
+}
+
+/**
+ * Call GitHub; on a 401 refresh the gh token once and retry; follow
+ * same-host redirects (renamed or transferred repositories) a few hops.
+ */
 async function callGithub(method, pathWithQuery, body) {
   let token = await readGhToken(false);
-  let upstream = await githubRequest(method, pathWithQuery, body, token);
-  if (upstream.status === 401) {
-    token = await readGhToken(true);
-    upstream = await githubRequest(method, pathWithQuery, body, token);
+  let target = pathWithQuery;
+  let refreshed = false;
+  for (let hops = 0; ; hops++) {
+    const upstream = await githubRequest(method, target, body, token);
+    if (upstream.status === 401 && !refreshed) {
+      refreshed = true;
+      token = await readGhToken(true);
+      continue;
+    }
+    if (REDIRECT_STATUSES.has(upstream.status) && hops < MAX_REDIRECTS) {
+      const next = resolveRedirect(method, upstream.headers.location);
+      if (next) {
+        target = next;
+        continue;
+      }
+    }
+    return upstream;
   }
-  return upstream;
 }
 
 // ── Route allowlist for /gh/* ──────────────────────────────────────────────
@@ -599,6 +638,7 @@ module.exports = {
   isCleanPath,
   readGhToken,
   readOriginUrl,
+  resolveRedirect,
   routeAllowed,
   scanLocalRepos,
   scrubUrl,

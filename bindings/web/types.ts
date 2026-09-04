@@ -348,7 +348,13 @@ export function describeError(err: unknown): string {
         ? `GitHub refused: ${detail}`
         : "GitHub refused the request for this repository.";
     case "not_found":
-      return "Not found. Check the repository selection.";
+      return detail ? `Not found: ${detail}` : "Not found. Check the repository selection.";
+    case "repo_moved":
+      return `This repository moved to ${detail}. Switching to it…`;
+    case "repo_unavailable":
+      return `Repository ${detail} was not found, or the connected GitHub credential cannot see it.`;
+    case "github_unavailable":
+      return "GitHub is having trouble right now. The panels will retry.";
     case "not_mergeable":
       return detail ? `Not mergeable: ${detail}` : "Not mergeable. Resolve conflicts or checks first.";
     case "validation":
@@ -358,6 +364,9 @@ export function describeError(err: unknown): string {
     case "forge_timeout":
       return "GitHub timed out. Try again.";
     default:
-      return code.startsWith("forge_error") ? "GitHub returned an error." : code;
+      if (code.startsWith("forge_error")) {
+        return detail ? `GitHub returned an error: ${detail}` : "GitHub returned an error.";
+      }
+      return detail ? `${code}: ${detail}` : code;
   }
 }

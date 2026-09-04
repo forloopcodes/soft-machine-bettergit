@@ -69,6 +69,28 @@ function bridgeUrl(endpoint: BridgeEndpoint, route: string, query?: GithubReques
 }
 
 /**
+ * GitHub's human-readable reason: the top-level message plus any per-field
+ * `errors[].message` (validation failures put the real cause there, e.g.
+ * "The listed users and repositories cannot be searched…").
+ */
+export function githubDetail(record: Record<string, unknown>): string {
+  const parts: string[] = [];
+  if (typeof record.message === "string" && record.message) parts.push(record.message);
+  if (Array.isArray(record.errors)) {
+    for (const entry of record.errors) {
+      const text =
+        typeof entry === "string"
+          ? entry
+          : entry && typeof entry === "object" && typeof (entry as { message?: unknown }).message === "string"
+            ? (entry as { message: string }).message
+            : "";
+      if (text && !parts.includes(text)) parts.push(text);
+    }
+  }
+  return parts.join(" ").slice(0, 400);
+}
+
+/**
  * Turn a non-2xx response into a ForgeError whose `code` the UI can map to
  * copy. Bridge-originated errors carry `{ error }`; GitHub errors carry
  * `{ message }` and are tagged by the bridge with x-forge-upstream.
@@ -79,7 +101,7 @@ export function classifyFailure(
   fromGithub: boolean
 ): ForgeError {
   const record = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
-  const message = typeof record.message === "string" ? record.message : "";
+  const message = githubDetail(record);
   const bridgeCode = typeof record.error === "string" ? record.error : null;
 
   if (!fromGithub) {
@@ -107,6 +129,12 @@ export function classifyFailure(
   if (status === 403) return new ForgeError("forbidden", status, message);
   if (status === 405 || status === 409) return new ForgeError("not_mergeable", status, message);
   if (status === 422) return new ForgeError("validation", status, message);
+  if (status === 301 || status === 302 || status === 307 || status === 308) {
+    // The bridge follows same-host redirects; one that still reaches us
+    // pointed somewhere the allowlist refuses.
+    return new ForgeError("not_found", status, message || "GitHub redirected outside the supported API.");
+  }
+  if (status >= 500) return new ForgeError("github_unavailable", status, message);
   return new ForgeError(`forge_error:${status}`, status, message);
 }
 
