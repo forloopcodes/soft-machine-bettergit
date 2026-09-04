@@ -1,26 +1,24 @@
 /**
  * Data hooks for the Forge plugin.
  *
- * Reads go through usePolledQuery (the app's freshness primitive) against
- * the server proxy, so lists and open details keep syncing with GitHub /
- * GitLab in the background without hand-rolled intervals. Writes are plain
- * apiFetch POSTs followed by a context-wide refresh so every panel
- * re-pulls the changed state.
+ * Reads resolve panel path strings through the route table (github/routes)
+ * into GitHub calls made by the VM bridge, cached and polled by the query
+ * store so lists and open details keep syncing in the background. Writes
+ * go through the same bridge and then refresh every subscribed query in
+ * place, so each panel re-pulls the changed state without blanking.
+ *
+ * Panel interop uses the host's documented surfaces only: useOpenPanel to
+ * reveal a detail panel, and the chat panel's "chat-send" signal to hand
+ * context to the agent.
  */
 
-import { useCallback, useEffect, useState } from "react";
-import {
-  apiFetch,
-  hasElementChipTarget,
-  sendElementToComposer,
-  usePanelActions,
-  usePolledQuery,
-  useWorkspaceRepositories,
-} from "@soft-machine/sdk";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useOpenPanelSafe } from "@soft-machine/sdk";
 import { useForge } from "./ForgeContext";
+import { chatMessageFor } from "./agentContext";
+import { localReposPlan, planRead, runMutation } from "./github/routes";
+import { useQuery } from "./query/useQuery";
 import { describeError, firstForgeRemote } from "./types";
-
-const FORGE_API_BASE = "/api/integrations/forge";
 
 export interface ForgeQuery<T> {
   data: T | null;
@@ -29,100 +27,66 @@ export interface ForgeQuery<T> {
 }
 
 /**
- * One polled proxy read. `path` is relative to the provider root and
- * already carries its query string (filters are encoded into it, so a
- * filter change re-keys the query); null disables the read entirely.
+ * One cached, polled read. `path` is the resource plus its query string
+ * (filters are encoded into it, so a filter change is a new cache entry);
+ * null disables the read entirely.
  */
 export function useForgeQuery<T>(path: string | null): ForgeQuery<T> {
-  const { provider, isConnected, refreshToken, notifyNotConnected } =
-    useForge();
-  const enabled = isConnected && path !== null;
-
-  const query = usePolledQuery<T>({
-    queryKey: ["forge", provider, path, refreshToken],
-    queryFn: async ({ signal }) => {
-      try {
-        return await apiFetch<T>(`${FORGE_API_BASE}/${provider}${path}`, {
-          signal,
-        });
-      } catch (err) {
-        if (err instanceof Error && err.message === "not_connected") {
-          notifyNotConnected();
-        }
-        throw err;
-      }
-    },
-    target: { kind: "control-plane" },
-    cadence: "ambient",
-    enabled,
-  });
+  const { client, isConnected } = useForge();
+  const plan = useMemo(
+    () => (client && isConnected && path !== null ? planRead<T>(client, path) : null),
+    [client, isConnected, path]
+  );
+  const query = useQuery<T>(plan);
 
   return {
     data: query.data ?? null,
     // A background refetch must not blank an already-rendered list, so
     // loading is only surfaced while there is no data yet.
-    isLoading: enabled && query.isPending,
-    error:
-      enabled && query.error && !query.polled.suspended
-        ? describeError(query.error)
-        : null,
+    isLoading: plan !== null && query.data === undefined && query.error === null,
+    error: plan !== null && query.error !== null ? describeError(query.error) : null,
   };
 }
 
 export interface ForgeMutation {
   /**
-   * POST to the provider proxy. Resolves the parsed response on success
-   * (truthy, so boolean-style `if (await mutate(...))` checks work) and
-   * null on failure, with the error already surfaced via `error`.
+   * Perform a write. Resolves the parsed response on success (truthy, so
+   * boolean-style `if (await mutate(...))` checks work) and null on
+   * failure, with the error already surfaced via `error`.
    */
-  mutate: <T = unknown>(
-    path: string,
-    body: Record<string, unknown>
-  ) => Promise<T | null>;
+  mutate: <T = unknown>(path: string, body: Record<string, unknown>) => Promise<T | null>;
   isPending: boolean;
   error: string | null;
   clearError: () => void;
 }
 
 /**
- * Shared write path: POST to the provider proxy, surface a user-facing
- * error, and re-key every polled query on success so the change is
- * reflected immediately instead of on the next ambient tick.
+ * Shared write path: run the GitHub call, surface a user-facing error, and
+ * refresh every polled query on success so the change is reflected
+ * immediately instead of on the next ambient tick.
  */
 export function useForgeMutation(): ForgeMutation {
-  const { provider, refresh, notifyNotConnected } = useForge();
+  const { client, refresh } = useForge();
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const mutate = useCallback(
-    async <T = unknown>(
-      path: string,
-      body: Record<string, unknown>
-    ): Promise<T | null> => {
+    async <T = unknown>(path: string, body: Record<string, unknown>): Promise<T | null> => {
       setIsPending(true);
       setError(null);
       try {
-        const response = await apiFetch<T>(
-          `${FORGE_API_BASE}/${provider}${path}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          }
-        );
+        if (!client) throw new Error("not_connected");
+        const response = (await runMutation(client, path, body)) as T;
         refresh();
         return response;
       } catch (err) {
-        if (err instanceof Error && err.message === "not_connected") {
-          notifyNotConnected();
-        }
         setError(describeError(err));
         return null;
       } finally {
         setIsPending(false);
       }
     },
-    [provider, refresh, notifyNotConnected]
+    [client, refresh]
   );
 
   const clearError = useCallback(() => setError(null), []);
@@ -132,18 +96,15 @@ export function useForgeMutation(): ForgeMutation {
 
 /**
  * Open an issue or pull in its detail panel: set the shared selection and
- * make the panel visible, expanded, and focused (focus drives the mobile
- * layout's auto-navigation; a collapsed panel would make the click look
- * like a no-op on desktop too).
+ * reveal the panel (findOrOpen reuses the existing detail panel, creating
+ * one only if none is open, and focuses it either way).
  */
 export function useOpenDetail(kind: "issue" | "pull"): {
   open: (number: number) => void;
   selected: number | null;
 } {
-  const { selectedIssue, setSelectedIssue, selectedPull, setSelectedPull } =
-    useForge();
-  const { setPanelVisible, setPanelCollapsed, setFocusedPanel } =
-    usePanelActions();
+  const { selectedIssue, setSelectedIssue, selectedPull, setSelectedPull } = useForge();
+  const openPanel = useOpenPanelSafe();
 
   const panelId = kind === "issue" ? "forge-issue-detail" : "forge-pull-detail";
   const setSelected = kind === "issue" ? setSelectedIssue : setSelectedPull;
@@ -151,11 +112,9 @@ export function useOpenDetail(kind: "issue" | "pull"): {
   const open = useCallback(
     (number: number) => {
       setSelected(number);
-      setPanelVisible(panelId, true);
-      setPanelCollapsed(panelId, false);
-      setFocusedPanel(panelId);
+      openPanel?.({ panelTypeId: panelId, mode: "findOrOpen" });
     },
-    [setSelected, panelId, setPanelVisible, setPanelCollapsed, setFocusedPanel]
+    [setSelected, panelId, openPanel]
   );
 
   return {
@@ -165,49 +124,49 @@ export function useOpenDetail(kind: "issue" | "pull"): {
 }
 
 /**
- * Fallback repo auto-detection for workspaces without a usable bootstrap
- * record (repo cloned into the VM directly): read the workspace's Git
- * repositories through the host's fixed, credential-scrubbed capability
- * (the same auto-lock source the Git panel uses) and select the first
- * GitHub/GitLab origin — dotfile/home repos and non-forge remotes are
- * skipped by firstForgeRemote.
- *
- * Must be called from a PANEL component: panels render below the editor's
- * OSCapabilitiesProvider, while the Forge provider mounts above it and can
- * never see the capability. Retry-until-the-clone-lands and co-mounted-
- * panel dedupe live inside useWorkspaceRepositories; `enabled` keeps the
- * probe from ever starting once a repo is selected or the bootstrap
- * record already answers the question.
+ * Repo auto-detection: the bridge lists git origins under /workspace, and
+ * the first GitHub remote wins (dotfile/home repos and non-GitHub remotes
+ * are skipped by firstForgeRemote). The probe is only enabled while nothing
+ * is selected, and it keeps polling so a clone that lands later is picked
+ * up; any panel may call it — the query store dedupes co-mounted panels.
  */
 export function useVmRepoAutoDetect(): void {
-  const { needsRepoAutoDetect, autoSelectFromUrl } = useForge();
-  const { repositories } = useWorkspaceRepositories({
-    enabled: needsRepoAutoDetect,
-  });
+  const { client, needsRepoAutoDetect, autoSelectFromUrl } = useForge();
+  const plan = useMemo(
+    () => (client && needsRepoAutoDetect ? localReposPlan(client) : null),
+    [client, needsRepoAutoDetect]
+  );
+  const { data: repositories } = useQuery(plan);
 
   useEffect(() => {
-    if (!needsRepoAutoDetect || repositories.length === 0) return;
-    const match = firstForgeRemote(
-      repositories.map((repository) => repository.origin).join("\n")
-    );
+    if (!needsRepoAutoDetect || !repositories || repositories.length === 0) return;
+    const match = firstForgeRemote(repositories.map((repository) => repository.origin).join("\n"));
     if (match) autoSelectFromUrl(match);
   }, [needsRepoAutoDetect, repositories, autoSelectFromUrl]);
 }
 
 /**
- * Deliver a prepared context block to the agent composer as an inline
- * chip (same channel and chip treatment as the browser panel's element
- * selector — a compact "@o/r#313" pill instead of a wall of text; the
- * full context rides in the chip payload). `canSend` gates the button;
- * sending without a registered composer would silently drop the context.
+ * Deliver a prepared context block to the agent through the chat panel's
+ * "chat-send" signal — the host's supported way for a plugin to message
+ * the agent. findOrOpen reuses the most recent chat panel (creating one if
+ * none exists), and the payload is delivered even to a panel created by
+ * the same call. `canSend` is false only outside a panel system.
  */
 export function useSendToAgent(): {
   canSend: boolean;
   send: (label: string, context: string) => boolean;
 } {
+  const openPanel = useOpenPanelSafe();
   return {
-    canSend: hasElementChipTarget(),
-    send: (label: string, context: string) =>
-      sendElementToComposer({ selector: label, html: context }),
+    canSend: openPanel !== null,
+    send: (label: string, context: string) => {
+      if (!openPanel) return false;
+      openPanel({
+        panelTypeId: "soft-bot",
+        mode: "findOrOpen",
+        signal: { kind: "chat-send", payload: { text: chatMessageFor(label, context) } },
+      });
+      return true;
+    },
   };
 }

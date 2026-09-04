@@ -1,51 +1,55 @@
 /**
  * Forge Plugin Context
  *
- * Shared state for the GitHub / GitLab panels: which provider and repo the
- * panels look at, the per-list filters, the open detail selections, and
- * connection state. Data fetching itself lives in hooks.ts (polled queries
- * against the server proxy); this context only owns selection and the
- * cross-panel refresh signal.
+ * Shared state for the GitHub panels: which repo the panels look at, the
+ * per-list filters, the open detail selections, and connection state. Data
+ * fetching itself lives in hooks.ts; this context owns selection, the
+ * bridge client, and the cross-panel refresh signal.
  *
- * Connection state comes from useIntegration per provider site: saving or
- * removing a token in Settings flips isConnected and re-keys every polled
- * query via refreshToken.
+ * Connection state comes from the plugin's VM bridge: the host starts it on
+ * demand (usePluginService) and the bridge reports what GitHub credential
+ * `gh` holds on the machine — the workspace's GitHub App connection or a
+ * GH_TOKEN from Settings → Integrations. Nothing here touches a token.
  */
 
 import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
   useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
-import {
-  useIntegration,
-  useIntegrations,
-  useQueryClient,
-  useWorkspaceIdentity,
-} from "@soft-machine/sdk";
+import { usePluginService } from "@soft-machine/sdk";
+import { createBridgeClient, type BridgeClient, type WhoAmI } from "./github/bridge";
+import { whoamiPlan } from "./github/routes";
+import { queryStore } from "./query/store";
+import { useQuery } from "./query/useQuery";
 import {
   DEFAULT_FILTERS,
-  PROVIDER_SITES,
   REPO_RE,
   repoFromCloneUrl,
   type ForgeProvider,
   type ListFilters,
 } from "./types";
 
+export const PLUGIN_ID = "forge";
+export const BRIDGE_SERVICE_ID = "github-bridge";
+
 interface ForgeContextValue {
   provider: ForgeProvider;
   setProvider: (provider: ForgeProvider) => void;
   repo: string | null;
   setRepo: (repo: string | null) => void;
+  /** Bridge client once the host reports the service ready; null before. */
+  client: BridgeClient | null;
+  /** What the bridge found `gh` signed in as; null until answered. */
+  connection: WhoAmI | null;
   isConnected: boolean;
-  /** True while the integrations bootstrap can't yet tell "no key" from
-   *  "haven't looked"; panels show a quiet pending state instead of
-   *  asserting "Not connected". */
+  /** True while the bridge is starting or its first credential check is in
+   *  flight; panels show a quiet pending state instead of asserting "Not
+   *  connected". */
   isConnectionPending: boolean;
   issueFilters: ListFilters;
   setIssueFilters: (update: Partial<ListFilters>) => void;
@@ -54,7 +58,7 @@ interface ForgeContextValue {
   /** Issue number open in the Issue Detail panel. */
   selectedIssue: number | null;
   setSelectedIssue: (n: number | null) => void;
-  /** PR/MR number open in the Pull Detail panel. */
+  /** PR number open in the Pull Detail panel. */
   selectedPull: number | null;
   setSelectedPull: (n: number | null) => void;
   isComposerOpen: boolean;
@@ -62,23 +66,14 @@ interface ForgeContextValue {
   /** The Pull Requests panel's new-PR composer (compare flow). */
   isPrComposerOpen: boolean;
   setPrComposerOpen: (open: boolean) => void;
-  /** Re-keys every polled query (manual refresh, after writes). */
-  refreshToken: string;
+  /** Refetch every live query in place (manual refresh, after writes). */
   refresh: () => void;
-  /** Read paths call this when the proxy reports not_connected. */
-  notifyNotConnected: () => void;
   isReady: boolean;
   setIsReady: (ready: boolean) => void;
   clear: () => void;
   getState: () => unknown;
   restoreState: (state: unknown) => void;
-  /**
-   * True while repo auto-detection is still warranted: nothing selected
-   * and no parseable bootstrap URL. The detection itself runs panel-side
-   * (useVmRepoAutoDetect in hooks.ts) because the host's repository
-   * capability lives BELOW the editor's OSCapabilitiesProvider, which this
-   * provider mounts above; the SDK hook dedupes co-mounted panels.
-   */
+  /** True while repo auto-detection is still warranted (nothing selected). */
   needsRepoAutoDetect: boolean;
   /** Apply a detected origin URL; no-op if it doesn't parse or a repo got
    *  selected while detection ran. */
@@ -97,7 +92,7 @@ export function useForge(): ForgeContextValue {
 
 /** Persisted blobs are hostile input; only restore shapes we recognize. */
 function sanitizeProvider(raw: unknown): ForgeProvider | null {
-  return raw === "github" || raw === "gitlab" ? raw : null;
+  return raw === "github" ? raw : null;
 }
 
 function sanitizeRepo(raw: unknown): string | null {
@@ -105,37 +100,48 @@ function sanitizeRepo(raw: unknown): string | null {
 }
 
 function sanitizeNumber(raw: unknown): number | null {
-  return typeof raw === "number" && Number.isInteger(raw) && raw > 0
-    ? raw
-    : null;
+  return typeof raw === "number" && Number.isInteger(raw) && raw > 0 ? raw : null;
+}
+
+/** The slice of usePluginService's result this plugin relies on. */
+interface BridgeServiceState {
+  status?: string;
+  baseUrl?: string | null;
+  error?: unknown;
 }
 
 export function ForgeProviderComponent({ children }: { children: ReactNode }) {
   const [provider, setProviderState] = useState<ForgeProvider>("github");
   const [repo, setRepoState] = useState<string | null>(null);
-  const [issueFilters, setIssueFiltersState] =
-    useState<ListFilters>(DEFAULT_FILTERS);
-  const [pullFilters, setPullFiltersState] =
-    useState<ListFilters>(DEFAULT_FILTERS);
+  const [issueFilters, setIssueFiltersState] = useState<ListFilters>(DEFAULT_FILTERS);
+  const [pullFilters, setPullFiltersState] = useState<ListFilters>(DEFAULT_FILTERS);
   const [selectedIssue, setSelectedIssueState] = useState<number | null>(null);
   const [selectedPull, setSelectedPullState] = useState<number | null>(null);
   const [isComposerOpen, setComposerOpen] = useState(false);
   const [isPrComposerOpen, setPrComposerOpen] = useState(false);
   const [isReady, setIsReady] = useState(false);
-  const queryClient = useQueryClient();
 
-  const github = useIntegration(PROVIDER_SITES.github);
-  const gitlab = useIntegration(PROVIDER_SITES.gitlab);
-  const { isLoading: integrationsLoading, refresh: refreshIntegrations } =
-    useIntegrations();
+  // The host provisions and starts the bridge on the workspace machine and
+  // hands back a token-gated URL once it is reachable.
+  const service = usePluginService(PLUGIN_ID, BRIDGE_SERVICE_ID) as BridgeServiceState;
+  const baseUrl = typeof service.baseUrl === "string" ? service.baseUrl : null;
+  // Every cache key embeds the bridge identity (origin + service path), so a
+  // different machine never serves another's cached answers and no explicit
+  // reset is needed when the client changes.
+  const client = useMemo(() => (baseUrl ? createBridgeClient(baseUrl) : null), [baseUrl]);
 
-  const active = provider === "github" ? github : gitlab;
-  const isConnected = active.isConnected;
-  const isConnectionPending = !isConnected && integrationsLoading;
+  const whoami = useQuery(useMemo(() => (client ? whoamiPlan(client) : null), [client]));
+  const connection = whoami.data ?? null;
+  const isConnected = connection !== null && connection.mode !== "none";
+  const serviceFailed = service.error !== undefined && service.error !== null;
+  const isConnectionPending =
+    !isConnected &&
+    !serviceFailed &&
+    (client === null || (whoami.data === undefined && whoami.error === null));
 
   // The workspace host fingerprints via getState() in the same commit it
   // calls restoreState(), before React re-renders, so getState must read
-  // synchronously-updated refs (same discipline as the Linear plugin).
+  // synchronously-updated refs.
   const stateRef = useRef({
     provider: "github" as ForgeProvider,
     repo: null as string | null,
@@ -145,17 +151,7 @@ export function ForgeProviderComponent({ children }: { children: ReactNode }) {
 
   const setProvider = useCallback((next: ForgeProvider) => {
     stateRef.current.provider = next;
-    // Repo paths are provider-scoped; carrying one across providers would
-    // poll a repo that likely doesn't exist there.
-    stateRef.current.repo = null;
-    stateRef.current.selectedIssue = null;
-    stateRef.current.selectedPull = null;
     setProviderState(next);
-    setRepoState(null);
-    setSelectedIssueState(null);
-    setSelectedPullState(null);
-    setIssueFiltersState(DEFAULT_FILTERS);
-    setPullFiltersState(DEFAULT_FILTERS);
   }, []);
 
   const setRepo = useCallback((next: string | null) => {
@@ -182,83 +178,39 @@ export function ForgeProviderComponent({ children }: { children: ReactNode }) {
   // Filter edits reset pagination: page N of the previous filter set is
   // meaningless under the new one.
   const setIssueFilters = useCallback((update: Partial<ListFilters>) => {
-    setIssueFiltersState((prev) => ({
-      ...prev,
-      page: 1,
-      ...update,
-    }));
+    setIssueFiltersState((prev) => ({ ...prev, page: 1, ...update }));
   }, []);
 
   const setPullFilters = useCallback((update: Partial<ListFilters>) => {
-    setPullFiltersState((prev) => ({
-      ...prev,
-      page: 1,
-      ...update,
-    }));
+    setPullFiltersState((prev) => ({ ...prev, page: 1, ...update }));
   }, []);
 
-  // Auto-select the repository the workspace was created from (same
-  // auto-lock behavior as the Git panel, but from the workspace record's
-  // repoBootstrap clone URL, so it works before any VM is awake). Fires
-  // at most once per clone URL and only while nothing is selected, so a
-  // manual pick, a restored session selection, or a deliberate provider
-  // switch (which clears the repo) is never fought.
-  const { repoBootstrap } = useWorkspaceIdentity();
+  // Repo auto-detection runs panel-side (useVmRepoAutoDetect in hooks.ts,
+  // fed by the bridge's scan of /workspace); the provider only says whether
+  // it is still warranted. Fires at most once per detected URL and only
+  // while nothing is selected, so a manual pick or a restored session
+  // selection is never fought.
   const autoSelectedUrlRef = useRef<string | null>(null);
+  const needsRepoAutoDetect = repo === null;
 
-  const applyDetected = useCallback(
-    (url: string, detected: { provider: ForgeProvider; repo: string }) => {
+  const autoSelectFromUrl = useCallback((url: string) => {
+    if (autoSelectedUrlRef.current === url) return;
+    const detected = repoFromCloneUrl(url);
+    // Re-check the ref: the user may have picked a repo mid-probe.
+    if (detected && stateRef.current.repo === null) {
       autoSelectedUrlRef.current = url;
       stateRef.current.provider = detected.provider;
       stateRef.current.repo = detected.repo;
       setProviderState(detected.provider);
       setRepoState(detected.repo);
-    },
-    []
-  );
+    }
+  }, []);
 
-  useEffect(() => {
-    const url = repoBootstrap?.url;
-    if (repo !== null || !url || autoSelectedUrlRef.current === url) return;
-    const detected = repoFromCloneUrl(url);
-    if (detected) applyDetected(url, detected);
-  }, [repo, repoBootstrap?.url, applyDetected]);
-
-  // Repo detection runs in panel components (below OSCapabilitiesProvider —
-  // see the ForgeContextValue doc comment); the provider only says whether
-  // it is still warranted. A bootstrap URL only suppresses detection when
-  // it actually PARSES: an unusable record (self-hosted mirror, odd format)
-  // must not strand the panels on the manual picker.
-  const bootstrapUsable =
-    !!repoBootstrap?.url && repoFromCloneUrl(repoBootstrap.url) !== null;
-  const needsRepoAutoDetect = repo === null && !bootstrapUsable;
-
-  const autoSelectFromUrl = useCallback(
-    (url: string) => {
-      const detected = repoFromCloneUrl(url);
-      // Re-check the ref: the user may have picked a repo mid-probe.
-      if (detected && stateRef.current.repo === null) {
-        applyDetected(url, detected);
-      }
-    },
-    [applyDetected]
-  );
-
-  // Refetch in place, not via a query-key bump: invalidateQueries marks
-  // the existing "forge" queries stale and refetches them while keeping
-  // their rendered data (isFetching, not isPending), so a write doesn't
-  // flash "Loading…" over every open panel. Re-keying (the old
-  // fetchGeneration approach) would reset data to undefined instead.
+  // Refetch in place: every live query re-runs while keeping its rendered
+  // data, so a write doesn't flash "Loading…" over every open panel.
   const refresh = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: ["forge"] });
-  }, [queryClient]);
-
-  // Token vanished server-side after our integrations snapshot (revoked
-  // from another session): re-sync so isConnected flips and panels show
-  // the real "Not connected" state.
-  const notifyNotConnected = useCallback(() => {
-    refreshIntegrations();
-  }, [refreshIntegrations]);
+    queryStore.invalidateAll();
+  }, []);
 
   const clear = useCallback(() => {
     setSelectedIssue(null);
@@ -267,9 +219,9 @@ export function ForgeProviderComponent({ children }: { children: ReactNode }) {
     setPrComposerOpen(false);
     setIssueFiltersState(DEFAULT_FILTERS);
     setPullFiltersState(DEFAULT_FILTERS);
-    // Server-backed plugin: a refetch IS the reset.
-    void queryClient.invalidateQueries({ queryKey: ["forge"] });
-  }, [setSelectedIssue, setSelectedPull, queryClient]);
+    // GitHub is the source of truth: a refetch IS the reset.
+    queryStore.invalidateAll();
+  }, [setSelectedIssue, setSelectedPull]);
 
   const getState = useCallback(() => ({ ...stateRef.current }), []);
 
@@ -280,9 +232,9 @@ export function ForgeProviderComponent({ children }: { children: ReactNode }) {
       const restoredProvider = sanitizeProvider(s.provider);
       const restoredRepo = sanitizeRepo(s.repo);
       // The host restores after mount, so auto-selection may already have
-      // locked onto the workspace's bootstrap repo. An explicit restored
-      // repo wins (it IS last session's selection, autodetected or manual),
-      // but an empty restore must not blank that fresh auto-selection.
+      // locked onto a detected repo. An explicit restored repo wins (it IS
+      // last session's selection, autodetected or manual), but an empty
+      // restore must not blank that fresh auto-selection.
       if (restoredRepo === null && autoSelectedUrlRef.current !== null) {
         setSelectedIssue(sanitizeNumber(s.selectedIssue));
         setSelectedPull(sanitizeNumber(s.selectedPull));
@@ -300,18 +252,14 @@ export function ForgeProviderComponent({ children }: { children: ReactNode }) {
     [setSelectedIssue, setSelectedPull]
   );
 
-  // Only the connection identity keys the queries; manual/write refreshes
-  // go through invalidateQueries (refresh/clear) so they don't re-key and
-  // blank rendered panels. A key change here means the token itself
-  // changed (connect/disconnect), which SHOULD refetch from scratch.
-  const refreshToken = active.keySetAt ?? "none";
-
   const value = useMemo<ForgeContextValue>(
     () => ({
       provider,
       setProvider,
       repo,
       setRepo,
+      client,
+      connection,
       isConnected,
       isConnectionPending,
       issueFilters,
@@ -326,9 +274,7 @@ export function ForgeProviderComponent({ children }: { children: ReactNode }) {
       setComposerOpen,
       isPrComposerOpen,
       setPrComposerOpen,
-      refreshToken,
       refresh,
-      notifyNotConnected,
       isReady,
       setIsReady,
       clear,
@@ -342,6 +288,8 @@ export function ForgeProviderComponent({ children }: { children: ReactNode }) {
       setProvider,
       repo,
       setRepo,
+      client,
+      connection,
       isConnected,
       isConnectionPending,
       issueFilters,
@@ -354,9 +302,7 @@ export function ForgeProviderComponent({ children }: { children: ReactNode }) {
       setSelectedPull,
       isComposerOpen,
       isPrComposerOpen,
-      refreshToken,
       refresh,
-      notifyNotConnected,
       isReady,
       clear,
       getState,
@@ -366,7 +312,5 @@ export function ForgeProviderComponent({ children }: { children: ReactNode }) {
     ]
   );
 
-  return (
-    <ForgeContext.Provider value={value}>{children}</ForgeContext.Provider>
-  );
+  return <ForgeContext.Provider value={value}>{children}</ForgeContext.Provider>;
 }

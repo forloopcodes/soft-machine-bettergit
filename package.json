@@ -1,0 +1,15 @@
+{
+  "name": "soft-machine-plugin-forge",
+  "private": true,
+  "version": "2.0.0",
+  "description": "GitHub PRs & Issues panels for Soft-Machine, backed by the workspace's GitHub connection",
+  "scripts": {
+    "test": "vitest run",
+    "smoke": "node scripts/smoke-bridge.mjs",
+    "sync-manifest": "node scripts/sync-manifest.mjs",
+    "check-manifest": "node scripts/sync-manifest.mjs --check"
+  },
+  "devDependencies": {
+    "vitest": "^5.0.0"
+  }
+}

@@ -1,21 +1,25 @@
 /**
- * Tests for the Forge plugin's pure helpers: the list query builder, the
- * active-filter counter, error copy, and the send-to-agent context
- * builders. Adversarial focus: user-controlled repo names, label names,
- * and remote bodies must be encoded or capped, never passed through raw.
+ * Tests for the Forge plugin's pure helpers: the list query builder and its
+ * inverse, clone-URL parsing, error copy, and the send-to-agent context
+ * builders. Adversarial focus: user-controlled repo names, label names, and
+ * remote bodies must be encoded or capped, never passed through raw.
  */
 
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_FILTERS,
+  ForgeError,
   describeError,
   firstForgeRemote,
   listQueryString,
+  parseListFilters,
   parsePatch,
   REPO_RE,
   repoFromCloneUrl,
+  type ListFilters,
 } from "../types";
 import {
+  chatMessageFor,
   issueAgentContext,
   itemSummaryContext,
   pullAgentContext,
@@ -62,9 +66,7 @@ function pull(overrides: Partial<ForgePullDetail> = {}): ForgePullDetail {
 
 describe("listQueryString", () => {
   it("encodes repo and defaults to state only", () => {
-    expect(listQueryString("owner/repo", DEFAULT_FILTERS)).toBe(
-      "?repo=owner%2Frepo&state=open"
-    );
+    expect(listQueryString("owner/repo", DEFAULT_FILTERS)).toBe("?repo=owner%2Frepo&state=open");
   });
 
   it("encodes every active filter and skips defaults", () => {
@@ -90,22 +92,36 @@ describe("listQueryString", () => {
   });
 
   it("URI-encodes hostile search text instead of splicing it raw", () => {
-    const qs = listQueryString("o/r", {
-      ...DEFAULT_FILTERS,
-      q: "a&state=all#inject",
-    });
-    // The raw injection string must be absent; the parsed value intact.
+    const qs = listQueryString("o/r", { ...DEFAULT_FILTERS, q: "a&state=all#inject" });
     expect(qs).not.toContain("&state=all#");
-    expect(new URLSearchParams(qs.slice(1)).get("q")).toBe(
-      "a&state=all#inject"
-    );
+    expect(new URLSearchParams(qs.slice(1)).get("q")).toBe("a&state=all#inject");
     expect(new URLSearchParams(qs.slice(1)).get("state")).toBe("open");
   });
 
-  it("omits page 1 so polled query keys stay stable", () => {
-    expect(
-      listQueryString("o/r", { ...DEFAULT_FILTERS, page: 1 })
-    ).not.toContain("page=");
+  it("omits page 1 so cache keys stay stable", () => {
+    expect(listQueryString("o/r", { ...DEFAULT_FILTERS, page: 1 })).not.toContain("page=");
+  });
+});
+
+describe("parseListFilters", () => {
+  it("round-trips every filter through listQueryString", () => {
+    const filters: ListFilters = {
+      state: "closed",
+      q: "flaky test",
+      author: "andrewgazelka",
+      labels: ["bug", "help wanted"],
+      assignee: "me",
+      milestone: "v1.0",
+      sort: "comments",
+      page: 3,
+    };
+    const params = new URLSearchParams(listQueryString("o/r", filters).slice(1));
+    expect(parseListFilters(params)).toEqual(filters);
+  });
+
+  it("falls back to defaults for missing or malformed values", () => {
+    const parsed = parseListFilters(new URLSearchParams("repo=o%2Fr&sort=bogus&page=-2&state=weird"));
+    expect(parsed).toEqual(DEFAULT_FILTERS);
   });
 });
 
@@ -125,43 +141,30 @@ describe("REPO_RE", () => {
 });
 
 describe("repoFromCloneUrl", () => {
-  it("parses https and ssh clone URLs for both forges", () => {
-    expect(
-      repoFromCloneUrl("https://github.com/Soft-Machine-io/soft-machine.git")
-    ).toEqual({ provider: "github", repo: "Soft-Machine-io/soft-machine" });
-    expect(repoFromCloneUrl("https://github.com/o/r")).toEqual({
+  it("parses https and ssh GitHub clone URLs", () => {
+    expect(repoFromCloneUrl("https://github.com/Soft-Machine-io/soft-machine.git")).toEqual({
       provider: "github",
-      repo: "o/r",
+      repo: "Soft-Machine-io/soft-machine",
     });
-    expect(repoFromCloneUrl("git@github.com:o/r.git")).toEqual({
-      provider: "github",
-      repo: "o/r",
-    });
-    expect(repoFromCloneUrl("https://gitlab.com/group/proj.git")).toEqual({
-      provider: "gitlab",
-      repo: "group/proj",
-    });
-    expect(repoFromCloneUrl("ssh://git@gitlab.com/group/proj")).toEqual({
-      provider: "gitlab",
-      repo: "group/proj",
-    });
+    expect(repoFromCloneUrl("https://github.com/o/r")).toEqual({ provider: "github", repo: "o/r" });
+    expect(repoFromCloneUrl("git@github.com:o/r.git")).toEqual({ provider: "github", repo: "o/r" });
+    expect(repoFromCloneUrl("ssh://git@github.com/o/r")).toEqual({ provider: "github", repo: "o/r" });
   });
 
   it("parses credentialed https remotes (VM clones embed the token)", () => {
-    expect(
-      repoFromCloneUrl("https://x-access-token:ghp_abc123@github.com/o/r.git")
-    ).toEqual({ provider: "github", repo: "o/r" });
-    expect(
-      repoFromCloneUrl("https://oauth2:glpat-abc@gitlab.com/group/proj.git")
-    ).toEqual({ provider: "gitlab", repo: "group/proj" });
-    // Userinfo must not let a hostile host impersonate a forge.
+    expect(repoFromCloneUrl("https://x-access-token:ghp_abc123@github.com/o/r.git")).toEqual({
+      provider: "github",
+      repo: "o/r",
+    });
+    // Userinfo must not let a hostile host impersonate GitHub.
     expect(repoFromCloneUrl("https://github.com@evil.test/o/r")).toBeNull();
     expect(repoFromCloneUrl("https://a@github.com.evil.test/o/r")).toBeNull();
   });
 
   it("returns null for other hosts, deep paths, and junk", () => {
+    expect(repoFromCloneUrl("https://gitlab.com/group/proj.git")).toBeNull();
     expect(repoFromCloneUrl("https://bitbucket.org/o/r.git")).toBeNull();
-    expect(repoFromCloneUrl("https://gitlab.com/a/b/c.git")).toBeNull();
+    expect(repoFromCloneUrl("https://github.com/a/b/c.git")).toBeNull();
     expect(repoFromCloneUrl("https://github.com/only-owner")).toBeNull();
     expect(repoFromCloneUrl("https://evil.test/github.com/o/r")).toBeNull();
     expect(repoFromCloneUrl("")).toBeNull();
@@ -169,26 +172,22 @@ describe("repoFromCloneUrl", () => {
 });
 
 describe("firstForgeRemote", () => {
-  it("picks the first GitHub/GitLab origin, skipping dotfile/home repos", () => {
-    // What the probe sees in a workspace with ~/.home + .apphome + the
-    // real repo all checked out: non-forge remotes first, forge one last.
+  it("picks the first GitHub origin, skipping dotfile/home repos", () => {
     const stdout = [
       "https://gitea.internal/dotfiles/home.git",
       "git@bitbucket.org:me/apphome.git",
       "https://github.com/soft-machine-io/soft-machine",
     ].join("\n");
-    expect(firstForgeRemote(stdout)).toBe(
-      "https://github.com/soft-machine-io/soft-machine"
-    );
+    expect(firstForgeRemote(stdout)).toBe("https://github.com/soft-machine-io/soft-machine");
   });
 
   it("returns the credentialed https remote a VM clone leaves", () => {
-    expect(
-      firstForgeRemote("https://x-access-token:ghp_z@github.com/o/r.git\n")
-    ).toBe("https://x-access-token:ghp_z@github.com/o/r.git");
+    expect(firstForgeRemote("https://x-access-token:ghp_z@github.com/o/r.git\n")).toBe(
+      "https://x-access-token:ghp_z@github.com/o/r.git"
+    );
   });
 
-  it("returns null when no line is a forge remote", () => {
+  it("returns null when no line is a GitHub remote", () => {
     expect(firstForgeRemote("https://bitbucket.org/o/r\n\n")).toBeNull();
     expect(firstForgeRemote("")).toBeNull();
   });
@@ -218,9 +217,7 @@ describe("parsePatch", () => {
   it("does not misread +++/--- headers as add/del lines", () => {
     const lines = parsePatch("--- a/x\n+++ b/x\n@@ -1 +1 @@\n+only add");
     expect(lines.filter((l) => l.kind === "del")).toHaveLength(0);
-    expect(lines.filter((l) => l.kind === "add")).toEqual([
-      { kind: "add", content: "only add" },
-    ]);
+    expect(lines.filter((l) => l.kind === "add")).toEqual([{ kind: "add", content: "only add" }]);
   });
 
   it("drops the phantom trailing empty context line", () => {
@@ -230,10 +227,32 @@ describe("parsePatch", () => {
 });
 
 describe("describeError", () => {
-  it("maps proxy error codes to actionable copy", () => {
+  it("maps error codes to actionable copy", () => {
     expect(describeError(new Error("invalid_api_key"))).toContain("Settings");
     expect(describeError(new Error("rate_limited"))).toContain("Rate limited");
     expect(describeError(new Error("not_mergeable"))).toContain("mergeable");
+    expect(describeError(new Error("not_connected"))).toContain("Integrations");
+    expect(describeError(new Error("forge_error:500"))).toBe("GitHub returned an error.");
+  });
+
+  it("surfaces GitHub's own detail for permission and validation failures", () => {
+    expect(describeError(new ForgeError("forbidden", 403, "Resource not accessible by integration"))).toBe(
+      "GitHub refused: Resource not accessible by integration"
+    );
+    expect(describeError(new ForgeError("validation", 422, "No commits between main and main"))).toContain(
+      "No commits between"
+    );
+    expect(describeError(new ForgeError("forbidden", 403))).toBe(
+      "GitHub refused the request for this repository."
+    );
+  });
+});
+
+describe("chatMessageFor", () => {
+  it("names the item and carries the context verbatim", () => {
+    const message = chatMessageFor("o/r#5", "## Issue o/r#5: title");
+    expect(message.startsWith("Shared from the PRs & Issues panel: o/r#5")).toBe(true);
+    expect(message).toContain("## Issue o/r#5: title");
   });
 });
 
@@ -244,7 +263,6 @@ describe("itemSummaryContext", () => {
     expect(ctx).toContain("https://github.com/o/r/issues/5");
     expect(ctx).toContain("Labels: bug");
     expect(ctx).toContain("Sent from the list view");
-    // The list row has no body; the summary must not fabricate one.
     expect(ctx).not.toContain("and old files too");
   });
 });
@@ -263,22 +281,16 @@ describe("issueAgentContext", () => {
     ];
     const ctx = issueAgentContext("github", "o/r", issue(), comments);
     expect(ctx).toContain("Issue o/r#5: nuke .cursor?");
-    expect(ctx).toContain("https://github.com/o/r/issues/5");
+    expect(ctx).toContain("Provider: GitHub");
     expect(ctx).toContain("State: open");
-    expect(ctx).toContain("Labels: bug");
     expect(ctx).toContain("Assignees: forloopcodes");
     expect(ctx).toContain("and old files too");
     expect(ctx).toContain("**vmfunc**");
     expect(ctx).toContain("workflow ref");
   });
 
-  it("caps a hostile oversized body instead of flooding the composer", () => {
-    const ctx = issueAgentContext(
-      "github",
-      "o/r",
-      issue({ body: "x".repeat(200_000) }),
-      []
-    );
+  it("caps a hostile oversized body instead of flooding the chat", () => {
+    const ctx = issueAgentContext("github", "o/r", issue({ body: "x".repeat(200_000) }), []);
     expect(ctx.length).toBeLessThan(30_000);
     expect(ctx).toContain("(truncated)");
   });
@@ -306,24 +318,8 @@ describe("pullAgentContext", () => {
       "o/r",
       pull(),
       [],
-      [
-        {
-          filename: "src/a.ts",
-          status: "modified",
-          additions: 30,
-          deletions: 4,
-          patch: null,
-        },
-      ],
-      [
-        {
-          id: "r1",
-          author: { login: "lukalot1", avatarUrl: null },
-          state: "APPROVED",
-          body: null,
-          submittedAt: null,
-        },
-      ]
+      [{ filename: "src/a.ts", status: "modified", additions: 30, deletions: 4, patch: null }],
+      [{ id: "r1", author: { login: "lukalot1", avatarUrl: null }, state: "APPROVED", body: null, submittedAt: null }]
     );
     expect(ctx).toContain("Pull request o/r#5");
     expect(ctx).toContain("fix/sof-475-firefox-blur -> main");

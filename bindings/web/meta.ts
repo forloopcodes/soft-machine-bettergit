@@ -6,14 +6,14 @@ export const FORGE_META: PluginMeta = {
   shortLabel: "PRI",
   color: "#3fb950",
   description:
-    "Browse, triage, and act on GitHub and GitLab pull requests and issues, synced live, with full-context handoff to the agent",
+    "Browse, triage, and act on GitHub pull requests and issues through the workspace's GitHub connection, synced live, with full-context handoff to the agent",
   integrations: [
     {
-      site: "gitlab.com",
+      site: "github.com",
       description:
-        "Connect a GitLab personal access token (api scope) to load merge requests and issues",
-      placeholder: "glpat-...",
-      docsUrl: "https://gitlab.com/-/user_settings/personal_access_tokens",
+        "Connect GitHub (the GitHub App or a GH_TOKEN) to load pull requests and issues; the panels use whatever gh is signed in with on the workspace machine",
+      placeholder: "ghp_... or github_pat_...",
+      docsUrl: "https://github.com/settings/tokens",
     },
   ],
   // Must mirror module.ts panels AND soft-machine.plugin.json exactly
@@ -42,4 +42,5 @@ export const FORGE_META: PluginMeta = {
       layout: { width: 420, minWidth: 300 },
     },
   ],
+  panelExtensions: [],
 };

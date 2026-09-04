@@ -1,11 +1,11 @@
 /**
  * Send-to-agent context builders. Pure functions that turn a loaded issue
  * or pull request (plus its thread) into one self-contained markdown block
- * the agent can act on without any panel state, delivered through the
- * composer bridge (same channel as the browser panel's element selector).
+ * the agent can act on without any panel state, delivered to the chat
+ * panel through the host's "chat-send" signal.
  *
  * Bodies and comments are user-controlled remote content, so everything is
- * length-capped: a hostile 200KB issue body must not flood the composer.
+ * length-capped: a hostile 200KB issue body must not flood the chat.
  */
 
 import type {
@@ -76,6 +76,15 @@ function commentsSection(comments: ForgeComment[]): string[] {
     lines.push("", `... ${comments.length - shown.length} more comments`);
   }
   return lines;
+}
+
+/**
+ * The chat message that carries a context block to the agent. `label` is
+ * the short handle the panel showed ("owner/repo#313"); the block follows
+ * verbatim so the agent has everything without a follow-up fetch.
+ */
+export function chatMessageFor(label: string, context: string): string {
+  return `Shared from the PRs & Issues panel: ${label}\n\n${context}`;
 }
 
 /**

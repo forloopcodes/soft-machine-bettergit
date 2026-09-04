@@ -1,46 +1,20 @@
 /**
- * Forge Plugin Toolbar: provider switch (GitHub / GitLab), repository
- * picker (searchable dropdown over the proxy's repo listing), and manual
- * refresh. The selected repo drives every Forge panel.
+ * Forge Plugin Toolbar: provider label, repository picker (shared
+ * RepoPicker), and manual refresh. The selected repo drives every Forge
+ * panel.
  */
 
-import { useState } from "react";
 import styled from "styled-components";
-import {
-  ANIMATION,
-  Dropdown,
-  DropdownItem,
-  DropdownSectionLabel,
-  Icon,
-  t,
-  useDebounce,
-} from "@soft-machine/sdk";
-import { PROVIDER_LABELS, type ForgeProvider, type ForgeRepo } from "./types";
+import { ANIMATION, Dropdown, DropdownItem, Icon, t } from "@soft-machine/sdk";
+import { PROVIDER_LABELS, type ForgeProvider } from "./types";
 import { useForge } from "./ForgeContext";
-import { useForgeQuery } from "./hooks";
+import { RepoPicker } from "./panels/RepoPicker";
 
 export function ForgeToolbar() {
-  const {
-    provider,
-    setProvider,
-    repo,
-    setRepo,
-    isConnected,
-    isConnectionPending,
-    refresh,
-  } = useForge();
+  const { provider, setProvider, repo, isConnected, isConnectionPending, refresh } = useForge();
 
-  const [repoSearch, setRepoSearch] = useState("");
-  const debouncedSearch = useDebounce(repoSearch, 300);
-  const repos =
-    useForgeQuery<{ repos: ForgeRepo[] }>(
-      debouncedSearch.trim()
-        ? `/repos?q=${encodeURIComponent(debouncedSearch.trim())}`
-        : "/repos"
-    ).data?.repos ?? [];
-
-  // Integrations bootstrap still in flight: showing "Not connected" here
-  // would flash a lie at every connected user on cold load.
+  // Connection check still in flight: showing "Not connected" here would
+  // flash a lie at every connected user on cold load.
   if (isConnectionPending) {
     return null;
   }
@@ -52,11 +26,7 @@ export function ForgeToolbar() {
         width={140}
         trigger={({ toggle }) => (
           <ToolbarButton type="button" onClick={toggle}>
-            {provider === "github" ? (
-              <Icon name="GitBranch" size={11} />
-            ) : (
-              <Icon name="GitFork" size={11} />
-            )}
+            <Icon name="GitBranch" size={11} />
             {PROVIDER_LABELS[provider]}
             <Icon name="ChevronDown" size={10} />
           </ToolbarButton>
@@ -83,55 +53,16 @@ export function ForgeToolbar() {
         <Badge>Not connected</Badge>
       ) : (
         <>
-          <Dropdown
-            align="start"
-            width={280}
+          <RepoPicker
             trigger={({ toggle }) => (
-              <ToolbarButton
-                type="button"
-                onClick={toggle}
-                title="Select repository"
-              >
+              <ToolbarButton type="button" onClick={toggle} title="Select repository">
                 <Icon name="Folder" size={11} />
                 {repo ?? "Select repository"}
                 <Icon name="ChevronDown" size={10} />
               </ToolbarButton>
             )}
-          >
-            {({ close }) => (
-              <>
-                <RepoSearchInput
-                  value={repoSearch}
-                  onChange={(e) => setRepoSearch(e.target.value)}
-                  placeholder="Search repositories"
-                  aria-label="Search repositories"
-                  autoFocus
-                  spellCheck={false}
-                  // Dropdown items react to clicks; keys must stay in the
-                  // input while typing.
-                  onKeyDown={(e) => e.stopPropagation()}
-                />
-                <DropdownSectionLabel>
-                  {repos.length === 0 ? "No repositories" : "Repositories"}
-                </DropdownSectionLabel>
-                {repos.map((r) => (
-                  <DropdownItem
-                    key={r.id}
-                    onClick={() => {
-                      setRepo(r.fullName);
-                      close();
-                    }}
-                  >
-                    <RepoRow $selected={r.fullName === repo}>
-                      {r.private && <Icon name="Lock" size={10} />}
-                      {r.fullName}
-                    </RepoRow>
-                  </DropdownItem>
-                ))}
-              </>
-            )}
-          </Dropdown>
-          <RefreshBtn onClick={refresh} title="Refresh from provider">
+          />
+          <RefreshBtn onClick={refresh} title="Refresh from GitHub">
             Refresh
           </RefreshBtn>
         </>
@@ -186,31 +117,4 @@ const RefreshBtn = styled.button`
   &:hover {
     background: ${t.bg.secondary};
   }
-`;
-
-const RepoSearchInput = styled.input`
-  margin: 4px;
-  padding: 4px 8px;
-  width: calc(100% - 8px);
-  background: ${t.bg.primary};
-  border: ${t.borderWidth} solid ${t.border};
-  border-radius: ${t.radius};
-  color: ${t.text.primary};
-  font-size: ${t.typography.sm};
-  font-family: inherit;
-  outline: none;
-
-  &:focus {
-    border-color: ${t.accent.primary};
-  }
-`;
-
-const RepoRow = styled.span<{ $selected: boolean }>`
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: ${(props) => (props.$selected ? t.accent.primary : "inherit")};
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 `;

@@ -5,7 +5,7 @@
  * composer; rows open the in-app Issue Detail panel.
  */
 
-import { Icon, IconButton } from "@soft-machine/sdk";
+import { Button, Icon, IconButton } from "@soft-machine/sdk";
 import {
   LIST_PAGE_SIZE,
   listQueryString,
@@ -16,6 +16,7 @@ import { useForge } from "../ForgeContext";
 import { useForgeQuery, useVmRepoAutoDetect } from "../hooks";
 import { FilterBar } from "./FilterBar";
 import { IssueComposer } from "./IssueComposer";
+import { RepoPicker } from "./RepoPicker";
 import {
   Container,
   Content,
@@ -28,7 +29,7 @@ import {
 } from "./shared";
 import { PagerRow } from "./Pager";
 
-/** Rendered by the panel header (right side): new issue + refresh. */
+/** Rendered by the panel header (right side): repository, new issue, refresh. */
 export function IssuesHeaderActions() {
   const { isConnected, repo, isComposerOpen, setComposerOpen, refresh } =
     useForge();
@@ -37,6 +38,19 @@ export function IssuesHeaderActions() {
 
   return (
     <>
+      <RepoPicker
+        align="end"
+        trigger={({ toggle, isOpen }) => (
+          <IconButton
+            onClick={toggle}
+            $active={isOpen}
+            title={repo ? `Repository: ${repo}` : "Select repository"}
+            aria-label="Select repository"
+          >
+            <Icon name="Folder" size={12} />
+          </IconButton>
+        )}
+      />
       <IconButton
         onClick={() => setComposerOpen(!isComposerOpen)}
         $active={isComposerOpen}
@@ -106,8 +120,16 @@ export function IssuesPanel() {
         <Empty>
           <EmptyTitle>No repository selected</EmptyTitle>
           <EmptyHint>
-            Pick a repository from the Forge toolbar to load its issues.
+            Pick a repository checked out on this workspace, or any GitHub
+            repository, to load its issues.
           </EmptyHint>
+          <RepoPicker
+            trigger={({ toggle }) => (
+              <Button type="button" $compact onClick={toggle}>
+                <Icon name="Folder" size={11} /> Select repository
+              </Button>
+            )}
+          />
         </Empty>
       </Container>
     );

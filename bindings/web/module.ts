@@ -1,14 +1,14 @@
 /**
  * Forge Plugin Module
  *
- * Registration for the GitHub / GitLab pull-request and issue panels.
- * Data flows from the server-side proxy (/api/integrations/forge/*)
- * through ForgeContext and the polled hooks into the panels; tokens
- * never reach the browser.
+ * Registration for the GitHub pull-request and issue panels. Data flows
+ * from the plugin's VM bridge (a machine service declared in the manifest,
+ * using the workspace's GitHub connection) through ForgeContext and the
+ * query hooks into the panels; no GitHub credential reaches the browser.
  */
 
 import { createElement, useCallback, useMemo } from "react";
-import { Icon, registerPluginModule } from "@soft-machine/sdk";
+import { Icon } from "@soft-machine/sdk";
 import type {
   PluginModule,
   PluginLoadingState,
@@ -16,6 +16,7 @@ import type {
   PluginSimulation,
   PluginInitialization,
 } from "@soft-machine/sdk";
+import manifest from "../../soft-machine.plugin.json";
 import { FORGE_META } from "./meta";
 import { ForgeProviderComponent, useForge } from "./ForgeContext";
 import { ForgeToolbar } from "./ForgeToolbar";
@@ -28,8 +29,8 @@ import {
   PullDetailPanel,
 } from "./panels";
 
-// The Forge module is plain JS with no WASM/OS dependency, and data
-// problems (bad token, rate limit, network) are recoverable and rendered
+// The Forge module is plain JS with no WASM dependency, and data problems
+// (missing credential, rate limit, network) are recoverable and rendered
 // inside the panels; they must never escalate to the editor-level boot
 // error page, so this is intentionally constant.
 const FORGE_LOADING_STATE: PluginLoadingState = {
@@ -42,8 +43,7 @@ function useForgeLoadingState(): PluginLoadingState {
 }
 
 function useForgePersistence(): PluginPersistence {
-  const { getState, restoreState, isReady, setIsReady, repo, provider } =
-    useForge();
+  const { getState, restoreState, isReady, setIsReady, repo, provider } = useForge();
 
   const getMetrics = useCallback(
     () => ({
@@ -102,7 +102,10 @@ function useForgeInitialization(): PluginInitialization {
 export const forgeModule: PluginModule = {
   id: "forge",
   meta: FORGE_META,
-  requiresOperatingSystem: false,
+  // The bridge is the plugin's only compute demand; the Provider consumes
+  // the machine-services layer to start it and learn its URL.
+  machine: manifest.machine as PluginModule["machine"],
+  providerCapabilities: ["os"],
 
   Provider: ForgeProviderComponent,
   panels: [
@@ -141,6 +144,7 @@ export const forgeModule: PluginModule = {
       layout: { width: 420, minWidth: 300 },
     },
   ],
+  panelExtensions: [],
   toolbar: { component: ForgeToolbar },
 
   useLoadingState: useForgeLoadingState,
@@ -149,9 +153,6 @@ export const forgeModule: PluginModule = {
   useInitialization: useForgeInitialization,
 };
 
-registerPluginModule(forgeModule);
-
-// The default export lets loaders recover registration from the browser's
-// module cache when the same URL is re-imported after an unregister (see
-// registerImportedPluginModule in plugins/registry.ts).
+// Workspace-local and store loads bind the default export (its id must
+// match the manifest); nothing else is consulted.
 export default forgeModule;
