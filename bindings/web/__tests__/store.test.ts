@@ -170,3 +170,68 @@ describe("QueryStore", () => {
     u2();
   });
 });
+
+describe("QueryStore poll policy", () => {
+  let store: QueryStore;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    store = new QueryStore({ isVisible: () => true, gcMs: 500, maxBackoffMs: 60_000 });
+  });
+
+  afterEach(() => {
+    store.clear();
+    vi.useRealTimers();
+  });
+
+  it("scale stretches the cadence and re-arms live timers", async () => {
+    const { plan, runs } = makePlan("p", ["v1", "v2", "v3", "v4"], 1000);
+    const unsub = store.subscribe(plan, () => {});
+    await flush();
+    expect(runs()).toBe(1);
+
+    store.setPollPolicy({ enabled: true, scale: 3 });
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(runs()).toBe(1);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(runs()).toBe(2);
+
+    store.setPollPolicy({ enabled: true, scale: 1 });
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(runs()).toBe(3);
+    unsub();
+  });
+
+  it("disabling stops timers; re-enabling resumes; manual refetch still works", async () => {
+    const { plan, runs } = makePlan("q", ["v1", "v2", "v3"], 1000);
+    const unsub = store.subscribe(plan, () => {});
+    await flush();
+    expect(runs()).toBe(1);
+
+    store.setPollPolicy({ enabled: false, scale: 1 });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(runs()).toBe(1);
+
+    await store.refetch("q");
+    expect(runs()).toBe(2);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(runs()).toBe(2);
+
+    store.setPollPolicy({ enabled: true, scale: 1 });
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(runs()).toBe(3);
+    unsub();
+  });
+
+  it("a never-fetched key still loads once while polling is off", async () => {
+    store.setPollPolicy({ enabled: false, scale: 1 });
+    const { plan, runs } = makePlan("r", ["v1", "v2"], 1000);
+    const unsub = store.subscribe(plan, () => {});
+    await flush();
+    expect(runs()).toBe(1);
+    expect(store.getSnapshot("r").data).toBe("v1");
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(runs()).toBe(1);
+    unsub();
+  });
+});

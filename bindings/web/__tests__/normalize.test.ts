@@ -152,7 +152,10 @@ describe("toCommit / toFile / toRepo", () => {
       defaultBranch: "main",
       private: true,
       webUrl: "https://github.com/o/r",
+      pushedAt: null,
     });
+    expect(toRepo({ full_name: "o/r", pushed_at: "2026-09-01T00:00:00Z" }).pushedAt).toBe("2026-09-01T00:00:00Z");
+    expect(toRepo({ full_name: "o/r", updated_at: "2026-08-01T00:00:00Z" }).pushedAt).toBe("2026-08-01T00:00:00Z");
     expect(toRepo({})).toBeNull();
   });
 });

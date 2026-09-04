@@ -2,7 +2,7 @@
  * Browser-side client for the plugin's VM bridge (bindings/vm/github-bridge.js).
  *
  * The host hands the plugin a token-gated service URL of the form
- * `https://<machine>/svc/forge/github-bridge/?token=sc_...`. Every request
+ * `https://<machine>/svc/bettergit/github-bridge/?token=sc_...`. Every request
  * carries that token twice: in the query string, because the /svc proxy
  * authenticates CORS preflights from it, and as `Authorization: Bearer`,
  * which the proxy forwards to the bridge for its own validation. No GitHub
@@ -13,7 +13,7 @@ import { ForgeError } from "../types";
 
 export interface BridgeEndpoint {
   origin: string;
-  /** Path prefix including the trailing slash, e.g. "/svc/forge/github-bridge/". */
+  /** Path prefix including the trailing slash, e.g. "/svc/bettergit/github-bridge/". */
   prefix: string;
   token: string;
   /** Identity for cache keys: the endpoint without its token. */

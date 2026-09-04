@@ -1,4 +1,4 @@
-# Forge — PRs & Issues plugin for Soft-Machine
+# bettergit — GitHub PRs & Issues plugin for Soft-Machine
 
 Browse, triage, and act on GitHub pull requests and issues from inside a
 Soft-Machine workspace: live-synced list panels, detail panels with
@@ -21,7 +21,7 @@ flowchart LR
   subgraph vm["Workspace machine"]
     bridge["github-bridge (machine service)"] --> gh["gh auth token"]
   end
-  hooks -- "token-gated /svc/forge/github-bridge/" --> bridge
+  hooks -- "token-gated /svc/bettergit/github-bridge/" --> bridge
   bridge -- "allowlisted REST calls" --> github["api.github.com"]
 ```
 
@@ -77,18 +77,18 @@ node scripts/sync-manifest.mjs --check  # CI-style check
 The bridge writes one access line per request (method, path, status,
 latency — never tokens or query strings) to its stderr, which the host
 captures as the service log, and to `bridge.log` in its per-service data
-directory on the machine (`/workspace/.soft-machine/machine/data/forge/`).
+directory on the machine (`/workspace/.soft-machine/machine/data/bettergit/`).
 
 ## Install into a workspace
 
 Run inside the workspace VM:
 
 ```bash
-gh repo clone forloopcodes/soft-machine-bettergit /soft-machine/plugins/forge
+gh repo clone forloopcodes/soft-machine-bettergit /soft-machine/plugins/bettergit
 ```
 
-The directory name **must** be `forge` — the plugin-service requires the
-directory to match the manifest id. Then enable **PRs & Issues** in the
+The directory name **must** be `bettergit` — the plugin-service requires the
+directory to match the manifest id. Then enable **bettergit** in the
 Plugins window (or ask the workspace agent to). The bridge starts on demand
 and the four panels (Pull Requests, Issues, Pull Detail, Issue Detail) mount
 within a few seconds.
@@ -103,7 +103,7 @@ personal-token view instead.
 ## Updating
 
 ```bash
-git -C /soft-machine/plugins/forge pull
+git -C /soft-machine/plugins/bettergit pull
 ```
 
 The plugin-service versions the tree by newest file mtime, so every pull (or
@@ -124,8 +124,13 @@ bindings/web/
   meta.ts                   FORGE_META — must mirror the manifest exactly
   ForgeContext.tsx          provider: selection, filters, bridge client,
                             connection state
-  ForgeToolbar.tsx          repo picker, refresh
-  hooks.ts                  useForgeQuery / useForgeMutation / useOpenDetail /
+  settings.ts               plugin settings declarations + value mapping
+                            (detail open mode, sidebar)
+  panelView.ts              per-panel list/detail navigation state (pure)
+  repoGroups.ts             repository sidebar model: pinned / workspace /
+                            GitHub groups, recency order, pin + collapse state
+  hooks.ts                  useForgeQuery / useForgeMutation / useForgeSettings /
+                            usePanelView / useOpenDetailPanel /
                             useVmRepoAutoDetect / useSendToAgent
   github/bridge.ts          browser client for the bridge (token handling,
                             error classification)
@@ -136,12 +141,60 @@ bindings/web/
   types.ts                  panel types + pure helpers
   agentContext.ts           context-block builders for agent handoff
   markdownNormalize.ts      GitHub-flavored markdown cleanup
-  panels/                   the four panels + composers + shared pieces
+  ui/                       design layer: shell, controls, rows, states,
+                            composer, status colors (see docs/design-checklist.md)
+  highlight/                diff syntax highlighting: Prism grammars, file →
+                            language map, token → theme color renderer
+  panels/ListPanel.tsx      Pull Requests + Issues (top bar, sidebar, list or
+                            embedded detail)
+  panels/DetailPanel.tsx    Pull Detail + Issue Detail (standalone shells)
+  panels/detail/            the shared detail views, thread, diff list
+  panels/sidebar/           RepoSidebar (repositories), ListSidebar (items)
+  panels/                   FilterMenu, ItemList, RepoPicker, composers, Pager,
+                            HeaderActions
   __tests__/                unit tests (see below)
 ```
 
-Only `react`, `styled-components`, and `@soft-machine/sdk` may be imported
-by the browser code — anything else will not resolve on the VM bundler.
+## Panels
+
+Both list panels share one layout: a top bar (repository breadcrumb, search,
+filter, new), a sidebar, and the main area. The sidebar shows the parent
+level of whatever the main area shows — repositories checked out on this
+workspace plus the credential's GitHub list while you browse a list, and the
+pull request or issue list while you read one item.
+
+Where an item opens is a plugin setting (Settings → Plugins → bettergit):
+
+- **Open details in this panel** (default): the main area swaps to the
+  detail, the sidebar becomes the list, and the breadcrumb grows a back
+  button. Each panel instance remembers its own place.
+- **Open details in a new panel**: the dedicated Pull Detail / Issue Detail
+  panel opens beside the list, as before.
+
+The repository sidebar has three collapsible sections: **Pinned** (hover a
+repository and pin it; pins are per user and shared by the Pull Requests and
+Issues panels), **In this workspace** (checkouts under `/workspace`), and
+**GitHub** (everything else the credential can see, most recently pushed
+first, minus pinned and checked-out repositories).
+
+The sidebar is resizable (drag its edge; double-click resets) and drops your
+own username from repository names, keeping it for organizations and other
+users.
+
+Every row also offers "Open in new panel" on hover regardless of the setting.
+
+**Auto-refresh** (also under Settings → Plugins → bettergit): lists and open
+items re-check GitHub in the background while the tab is visible, every 45
+seconds by default; the slider sets 15 s to 5 min, and reference data
+(labels, repositories) scales proportionally. Switch it off to refresh only
+with the panel's Refresh button or after you comment, merge or close.
+The sidebar hides automatically below ~600px of panel width; the breadcrumb
+picker and back button cover the same actions.
+
+`react`, `styled-components`, and `@soft-machine/sdk` resolve to the host's
+copies and must never be installed; other browser dependencies (currently
+only `prismjs`) are installed in this directory with `bun add` and bundled
+into the module.
 
 ## Tests
 

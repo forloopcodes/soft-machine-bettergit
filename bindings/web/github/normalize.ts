@@ -190,6 +190,7 @@ export function toRepo(raw: unknown): ForgeRepo | null {
     defaultBranch: str(r.default_branch),
     private: r.private === true,
     webUrl: str(r.html_url) ?? `https://github.com/${fullName}`,
+    pushedAt: str(r.pushed_at) ?? str(r.updated_at),
   };
 }
 
