@@ -84,7 +84,7 @@ directory on the machine (`/workspace/.soft-machine/machine/data/forge/`).
 Run inside the workspace VM:
 
 ```bash
-gh repo clone forloopcodes/soft-machine-plugin-forge /soft-machine/plugins/forge
+gh repo clone forloopcodes/soft-machine-bettergit /soft-machine/plugins/forge
 ```
 
 The directory name **must** be `forge` — the plugin-service requires the
